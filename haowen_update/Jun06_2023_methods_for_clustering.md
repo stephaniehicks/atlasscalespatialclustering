@@ -22,7 +22,7 @@ Benchmarking Computational Integration Methods for Spatial Transcriptomics Data:
 
 Based on RGB channel, $$z_v = \frac{{r_v \times V_r + g_v \times V_g + b_v \times V_b}}{{V_r + V_g + V_b}}, V_i\rightarrow\text{variance of }i_v$$, $z_v^*=\frac{z_v-\mu_z}{\sigma_z}\times \max \left( {\sigma _x,\sigma _y} \right) \times s$
 
-Distance$d\left( {u,v} \right) = \sqrt {(x_u - x_v)^2 + (y_u - y_v)^2 + (z_u^ \ast - z_v^ \ast )^2} .$
+Distance $d\left( {u,v} \right) = \sqrt {(x_u - x_v)^2 + (y_u - y_v)^2 + (z_u^ \ast - z_v^ \ast )^2} .$
 
 Edge weight: $w\left( {u,v} \right) = {{{\mathrm{exp}}}}\left( { - \frac{{d\left( {u,v} \right)^2}}{{2l^2}}} \right).$
 
@@ -79,6 +79,8 @@ $F({{\Pi }}\,;\,X,D,X^{\prime} ,D^{\prime} ,c,\alpha )=(1-\alpha )\mathop{\sum}\
 
 Gromov–Wasserstein optimal transport problem
 
+PASTE v2 (TBF)
+
 **Ideal for replicates**
 
 **PRECAST:** https://www.nature.com/articles/s41467-023-35947-w
@@ -101,9 +103,47 @@ To promote spatial smoothness in the space of cluster labels, we assume each lat
 
 ### Possible Approach
 
-Dim. Reduction -> Batch/Sample-wise Clustering -> Integration?
+#### Two-level Clustering for data integration
+
+##### Step 0: Preprocessing
+
+Data representation:
+
+Gene Expression (Scaled or raw counts?): $X_{n\times g}$
+
+Euclidean Distance Matrix (symmetric): $D_{n\times n}$
+
+Cell/Spot Similarity Matrix (symmetric): $M_{n\times n},m_{i,j}=f(x_i,x_j)$
+
+Primary Weighted Undirected Graph Matrix: $G_{n\times n} = g(D,M)$
+
+Function $g$ needs to be sensitive to $D$, therefore, for each spot, its nearest neighbors in the network should be physically near the spot. Thus the weighted graph can preserve the spatial information in later clustering steps
+
+Filter out edges with low weight: $G'=G[G>v]$
+
+##### Step 1: Build KNN from $G'$:
+
+For each node, find its k neighbors with highest weights, remove connection to any other nodes. This step is designed to reduce the complexity of graphs and improve time & memory efficiency.
+
+##### Step 2: Graph-based clustering with high resolution
+
+Use Louvain to conduct graph-based clustering, increase the resolution to get about $m$ (50-100) small clusters (called niche?). 
+
+We have the averaged gene expression matrix for each niche in each sample: $Y_{i}\in \mathbb{R}^{m\times g}$
+
+Then, create an abstract graph for niches in each sample
+
+##### Step 3: Graph integration
+
+This step can be done directly using Seurat v3 data integration method, as the input will be the averaged expression data of each niche.
+
+Or, calculate the similarity between two niches $(k,l)$ from two different samples $(i,j)$: $s_{i,j,k,l}=h(y_{ik},y_{jl})$ to 'connect' these two niches. Another threshold filter will also be applied to reduce the complexity of the integrated graph.
+
+##### Step 4: Top-level clustering for cell-typing
+
+Another round of Louvain clustering to assign cluster labels for each niche and for each cell within.
 
 
 
-Simulation for validation
+
 
