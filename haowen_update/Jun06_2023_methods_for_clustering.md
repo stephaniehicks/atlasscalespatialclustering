@@ -12,7 +12,7 @@ Benchmarking cell-type clustering methods for spatially resolved transcriptomics
 
 Benchmarking Computational Integration Methods for Spatial Transcriptomics Data: https://www.biorxiv.org/content/10.1101/2021.08.27.457741v2.full
 
-
+Benchmarking spatial and single-cell transcriptomics integration methods for transcript distribution prediction and cell type deconvolution: https://www.nature.com/articles/s41592-022-01480-9
 
 ##### Spatial Clustering Methods
 
@@ -93,9 +93,21 @@ To promote spatial smoothness in the space of cluster labels, we assume each lat
 
 ##### Data Integration Methods - ST Data
 
-*Scanorama (TBF)*
+**Scanorama**: https://www.nature.com/articles/s41587-019-0113-3
 
-*fastMNN (TBF)*
+![Fig. 1](https://media.springernature.com/full/springer-static/image/art%3A10.1038%2Fs41587-019-0113-3/MediaObjects/41587_2019_113_Fig1_HTML.png)
+
+
+
+
+
+mutual nearest neighbors for pattern matching
+
+<img src="https://media.springernature.com/full/springer-static/image/art%3A10.1038%2Fnbt.4091/MediaObjects/41587_2018_Article_BFnbt4091_Fig1_HTML.jpg" alt="Figure 1" style="zoom:50%;" />
+
+~~*fastMNN (TBF)*~~
+
+Batch effect correction
 
 **Harmony**
 

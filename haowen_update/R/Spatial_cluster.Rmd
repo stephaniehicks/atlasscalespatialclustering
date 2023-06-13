@@ -1,0 +1,136 @@
+---
+title: "Spatial_cluster"
+author: "Anonymous"
+date: "2023-06-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "E:/share_hdd/research/")
+```
+
+## Load package & Data
+
+
+```{r package}
+suppressMessages(library(Seurat))
+suppressMessages(library(spatialLIBD))
+suppressMessages(library(rhdf5))
+suppressMessages(library(tidyverse))
+suppressMessages(library(Matrix))
+suppressMessages(library(igraph))
+suppressMessages(library(psych))
+
+#source("func.R")
+```
+
+
+
+```{r load data}
+path_lc <- c("Br2720", "Br6432", "Br6522", "Br8667")
+
+data_ls <- list()
+
+# Row:Gene by Column:Cell Matrix
+for(i in path_lc){
+  message(paste("Processing:",i))
+  data_ls[[i]] <- list()
+  data_ls[[i]][['dgCMatrix']] <- 
+    new('dgCMatrix', 
+        p = h5read(paste0(i,"/filtered_feature_bc_matrix.h5"),"/matrix/indptr") %>% as.vector(), 
+        i = h5read(paste0(i,"/filtered_feature_bc_matrix.h5"),"/matrix/indices") %>% as.vector(), 
+        x = h5read(paste0(i,"/filtered_feature_bc_matrix.h5"),"/matrix/data") %>% as.numeric(), 
+        Dim=h5read(paste0(i,"/filtered_feature_bc_matrix.h5"),"/matrix/shape") %>% as.vector()) 
+  
+  colnames(data_ls[[i]][['dgCMatrix']]) <- paste0(i, "_", h5read(paste0(i,"/filtered_feature_bc_matrix.h5"),"/matrix/barcodes") %>% 
+                                    as.vector() %>% str_replace_all(pattern = "-", replacement = "_"))
+  row.names(data_ls[[i]][['dgCMatrix']]) <- h5read(paste0(i,"/filtered_feature_bc_matrix.h5"),"/matrix/features/id") %>% as.vector()
+  
+  # Seurat Preprocessing
+  tmp_obj <- CreateSeuratObject(counts = data_ls[[i]][['dgCMatrix']])
+  tmp_obj <- NormalizeData(tmp_obj)
+  tmp_obj <- FindVariableFeatures(tmp_obj, selection.method = "vst", nfeatures = 2000)
+  
+  cor_mat <- cor(as.matrix(tmp_obj@assays$RNA@data[VariableFeatures(tmp_obj),]))
+  data_ls[[i]][['cor_mat']] <- cor_mat
+  
+  # Distance Matrix
+  dist_info <- read.csv(paste0(i,"/spatial/tissue_spot_counts.csv"))
+  row.names(dist_info) <- paste0(i, "_", dist_info$barcode %>% 
+                                      as.vector() %>% str_replace_all(pattern = "-", replacement = "_"))
+  
+  dist_info <- dist_info[colnames(cor_mat),]
+  
+  dist_mat <- matrix(0, nrow = nrow(cor_mat), ncol = ncol(cor_mat), 
+                     dimnames = list(colnames(cor_mat), row.names(cor_mat)))
+  
+  sum(row.names(dist_mat) != row.names(dist_info))
+  
+  for(j in seq_len(nrow(dist_mat))){
+    dist_mat[,j] <- sqrt((dist_info$x - dist_info$x[j])^2 + (dist_info$y - dist_info$y[j])^2)
+  }
+  
+  data_ls[[i]][['dist_info']] <- dist_info
+  data_ls[[i]][['dist_mat']] <- dist_mat
+}
+
+```
+
+## Primary Clustering
+Use Louvain
+```{r primary-clustering}
+edge_threshold <- 0.3
+spatial_coef <- 1500
+for(i in path_lc){
+  # Kernal Covertion
+  tmp_mat <- data_ls[[i]][["cor_mat"]] * exp(-data_ls[[i]][["dist_mat"]]/spatial_coef)
+  distMat <- cor2dist(tmp_mat)
+  distMat[abs(tmp_mat) < edge_threshold] <- 0
+  
+  g <- graph.adjacency(distMat, mode = "undirected", 
+                       weighted = TRUE, diag = TRUE)
+  
+  louvain_res <- cluster_louvain(g, resolution = 10)
+  data_ls[[i]][["dist_info"]]["cluster"] <- as.factor(louvain_res$membership)
+  
+  message(paste(i,"cluster number:",length(levels(as.factor(louvain_res$membership)))))
+  
+  data_ls[[i]][["cl_plot"]] <- ggplot(data_ls[[i]][["dist_info"]], aes(x = x, y = y, color = cluster)) +
+    geom_point() + 
+    theme_classic() + 
+    theme(legend.position = "none")
+}
+
+```
+
+
+## Abstract Graph Building
+```{r}
+
+
+```
+
+## MNN Integration
+
+
+## Secondary Clustering
+
+
+
+
+Final Results
+
+## Benchmark(To-Do)
+
+
+
+
+
+
+
+
+
+
+
+
