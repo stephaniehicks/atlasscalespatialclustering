@@ -1,0 +1,795 @@
+---
+title: "SpatialLIBD_try"
+author: "Anonymous"
+date: "2023-06-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+suppressMessages(library(spatialLIBD))
+suppressMessages(library(Seurat))
+suppressMessages(library(ggpubr))
+suppressMessages(library(tidyverse))
+suppressMessages(library(PRECAST))
+suppressMessages(library(igraph))
+suppressMessages(library(psych))
+library(ggnewscale)
+library(RColorBrewer)
+suppressMessages(library(circlize))
+suppressMessages(library(SpotClean))
+suppressMessages(library(ComplexHeatmap))
+
+
+
+my_fetch_data <- function (type = c("sce", "sce_layer", "modeling_results", "sce_example", 
+                                    "spe", "spatialDLPFC_Visium", "spatialDLPFC_Visium_pseudobulk", 
+                                    "spatialDLPFC_Visium_modeling_results", "spatialDLPFC_Visium_SPG", 
+                                    "spatialDLPFC_snRNAseq", "Visium_SPG_AD_Visium_wholegenome_spe", 
+                                    "Visium_SPG_AD_Visium_targeted_spe", "Visium_SPG_AD_Visium_wholegenome_pseudobulk_spe", 
+                                    "Visium_SPG_AD_Visium_wholegenome_modeling_results"), destdir = tempdir(), 
+                           eh = ExperimentHub::ExperimentHub(), bfc = BiocFileCache::BiocFileCache()) 
+{
+  sce <- sce_layer <- modeling_results <- sce_sub <- spe <- NULL
+  type <- match.arg(type)
+  stopifnot(methods::is(eh, "ExperimentHub"))
+  if (type == "spe") {
+    spe <- sce_to_spe(fetch_data("sce", destdir = destdir, 
+                                 eh = eh))
+    return(spe)
+  }
+  if (type == "sce") {
+    if (!T) {
+      warning(paste("Your system might not have enough memory available.", 
+                    "Try with a machine that has more memory", "or use the 'sce_example'."))
+    }
+    tag <- "Human_Pilot_DLPFC_Visium_spatialLIBD"
+    hub_title <- "Human_Pilot_DLPFC_Visium_spatialLIBD_spot_level_SCE"
+    file_name <- "Human_DLPFC_Visium_processedData_sce_scran_spatialLIBD.Rdata"
+    url <- "https://www.dropbox.com/s/f4wcvtdq428y73p/Human_DLPFC_Visium_processedData_sce_scran_spatialLIBD.Rdata?dl=1"
+  }
+  else if (type == "sce_layer") {
+    tag <- "Human_Pilot_DLPFC_Visium_spatialLIBD"
+    hub_title <- "Human_Pilot_DLPFC_Visium_spatialLIBD_layer_level_SCE"
+    file_name <- "Human_DLPFC_Visium_processedData_sce_scran_sce_layer_spatialLIBD.Rdata"
+    url <- "https://www.dropbox.com/s/bg8xwysh2vnjwvg/Human_DLPFC_Visium_processedData_sce_scran_sce_layer_spatialLIBD.Rdata?dl=1"
+  }
+  else if (type == "modeling_results") {
+    tag <- "Human_Pilot_DLPFC_Visium_spatialLIBD"
+    hub_title <- "Human_Pilot_DLPFC_Visium_spatialLIBD_modeling_results"
+    file_name <- "Human_DLPFC_Visium_modeling_results.Rdata"
+    url <- "https://www.dropbox.com/s/se6rrgb9yhm5gfh/Human_DLPFC_Visium_modeling_results.Rdata?dl=1"
+  }
+  else if (type == "sce_example") {
+    tag <- "Human_Pilot_DLPFC_Visium_spatialLIBD"
+    hub_title <- "Human_DLPFC_Visium_sce_example"
+    file_name <- "sce_sub_for_vignette.Rdata"
+    url <- "https://www.dropbox.com/s/5ra9o8ku9iyyf70/sce_sub_for_vignette.Rdata?dl=1"
+  }
+  else if (type == "spatialDLPFC_Visium") {
+    if (!T) {
+      warning(paste("Your system might not have enough memory available (7GB).", 
+                    "Try with a machine that has more memory."))
+    }
+    tag <- "spatialDLPFC_Visium_VisiumSPG_snRNAseq_spatialLIBD"
+    hub_title <- "spatialDLPFC_Visium_spe"
+    file_name <- "spe_filtered_final_with_clusters_and_deconvolution_results.rds"
+    url <- "https://www.dropbox.com/s/y2ifv5v8g68papf/spe_filtered_final_with_clusters_and_deconvolution_results.rds?dl=1"
+  }
+  else if (type == "spatialDLPFC_Visium_pseudobulk") {
+    tag <- "spatialDLPFC_Visium_VisiumSPG_snRNAseq_spatialLIBD"
+    hub_title <- "spatialDLPFC_Visium_pseudobulk_spe"
+    file_name <- "sce_pseudo_BayesSpace_k09.rds"
+    url <- "https://www.dropbox.com/s/pbti4strsfk1m55/sce_pseudo_BayesSpace_k09.rds?dl=1"
+  }
+  else if (type == "spatialDLPFC_Visium_modeling_results") {
+    tag <- "spatialDLPFC_Visium_VisiumSPG_snRNAseq_spatialLIBD"
+    hub_title <- type
+    file_name <- "modeling_results_BayesSpace_k09.Rdata"
+    url <- "https://www.dropbox.com/s/srkb2ife75px2yz/modeling_results_BayesSpace_k09.Rdata?dl=1"
+  }
+  else if (type == "spatialDLPFC_Visium_SPG") {
+    tag <- "spatialDLPFC_Visium_VisiumSPG_snRNAseq_spatialLIBD"
+    hub_title <- "spatialDLPFC_Visium_SPG_spe"
+    file_name <- "spe.rds"
+    url <- "https://www.dropbox.com/s/nbf13dna9ibqfaa/spe.rds?dl=1"
+  }
+  else if (type == "spatialDLPFC_snRNAseq") {
+    tag <- "spatialDLPFC_Visium_VisiumSPG_snRNAseq_spatialLIBD"
+    hub_title <- type
+    file_name <- "sce_DLPFC_annotated.zip"
+    url <- "https://www.dropbox.com/s/5919zt00vm1ht8e/sce_DLPFC_annotated.zip?dl=1"
+  }
+  else if (type == "Visium_SPG_AD_Visium_wholegenome_spe") {
+    tag <- "Visium_SPG_AD_Alzheimer_Disease_ITC_spatialLIBD"
+    hub_title <- type
+    file_name <- "Visium_SPG_AD_spe_wholegenome.Rdata"
+    url <- "https://www.dropbox.com/s/ng036m63grykdm6/Visium_SPG_AD_spe_wholegenome.Rdata?dl=1"
+  }
+  else if (type == "Visium_SPG_AD_Visium_targeted_spe") {
+    tag <- "Visium_SPG_AD_Alzheimer_Disease_ITC_spatialLIBD"
+    hub_title <- type
+    file_name <- "Visium_SPG_AD_spe_targeted.Rdata"
+    url <- "https://www.dropbox.com/s/kda9160awc2h8jq/Visium_SPG_AD_spe_targeted.Rdata?dl=1"
+  }
+  else if (type == "Visium_SPG_AD_Visium_wholegenome_pseudobulk_spe") {
+    tag <- "Visium_SPG_AD_Alzheimer_Disease_ITC_spatialLIBD"
+    hub_title <- type
+    file_name <- "sce_pseudo_pathology_wholegenome.rds"
+    url <- "https://www.dropbox.com/s/p8foxj6t6inb8uf/sce_pseudo_pathology_wholegenome.rds?dl=1"
+  }
+  else if (type == "Visium_SPG_AD_Visium_wholegenome_modeling_results") {
+    tag <- "Visium_SPG_AD_Alzheimer_Disease_ITC_spatialLIBD"
+    hub_title <- type
+    file_name <- "Visium_IF_AD_modeling_results.Rdata"
+    url <- "https://www.dropbox.com/s/5plupu8bj5m0kfh/Visium_IF_AD_modeling_results.Rdata?dl=1"
+  }
+  file_path <- file.path(destdir, file_name)
+  if (!file.exists(file_path)) {
+    q <- AnnotationHub::query(eh, pattern = c(tag, hub_title))
+    if (length(q) == 1) {
+      res <- q[[1]]
+      if (type %in% c("sce", "sce_example")) {
+        res <- .update_sce(res)
+      }
+      else if (type == "sce_layer") {
+        res <- .update_sce_layer(res)
+      }
+      return(res)
+    }
+    else {
+      file_path <- BiocFileCache::bfcrpath(bfc, url)
+    }
+  }
+  message(Sys.time(), " loading file ", file_path)
+  if (grepl(".Rdata", file_path)) {
+    load(file_path, verbose = FALSE)
+    if (type == "sce") {
+      return(spatialLIBD:::.update_sce(sce))
+    }
+    else if (type == "sce_layer") {
+      return(spatialLIBD:::.update_sce_layer(sce_layer))
+    }
+    else if (type == "modeling_results" || type == "spatialDLPFC_Visium_modeling_results" || 
+             type == "Visium_SPG_AD_Visium_wholegenome_modeling_results") {
+      return(modeling_results)
+    }
+    else if (type == "sce_example") {
+      return(spatialLIBD:::.update_sce(sce_sub))
+    }
+    else if (type == "Visium_SPG_AD_Visium_wholegenome_spe" || 
+             type == "Visium_SPG_AD_Visium_targeted_spe") {
+      return(spe)
+    }
+  }
+  else if (grepl(".rds", file_path)) {
+    return(readRDS(file_path))
+  }
+  else {
+    file_path
+  }
+}
+```
+
+## Download Data
+
+
+```{r load_data}
+## Connect to ExperimentHub
+ehub <- ExperimentHub::ExperimentHub()
+## Download the small example sce data
+#spe <- my_fetch_data(type = "sce", eh = ehub, destdir = "E:/share_hdd/research/sce/") %>% sce_to_spe()
+
+spe <- fetch_data(type = "spe", eh = ehub, destdir = "E:/share_hdd/research/sce/")
+
+#sp_obj_ls <- readRDS("~/RScripts/SpotCleaned_obj_ls.RDS")
+```
+Ground Truth
+
+```{r}
+vis_grid_clus(
+    spe = spe,
+    pdf_file = "Jun19_ground_truth.pdf",
+    clustervar = "layer_guess_reordered_short",
+    sample_order = unique(spe$sample_id),
+    ... = " LIBD Layers"
+)
+
+vis_gene(spe, "151676", geneid = "GNG11; ENSG00000127920")
+
+```
+# Create Seurat List
+## From spe Data
+```{r}
+# Convert to seurat list
+new_seu_ls <- function(sel_assay="logcounts"){
+  seu_ls <- list()
+  #hvg_ls <- c()
+  #sel_assay <- "logcounts" # counts logcounts
+  
+  for(i in unique(spe$sample_id)){
+    idx <- spe$sample_id == i
+    seu_ls[[i]] <- CreateSeuratObject(counts = spe@assays@data@listData[[sel_assay]][,idx],
+                                         project = paste0("spe_",i),
+                                         meta.data = data.frame(layer = spe@colData[idx,c("layer_guess_reordered_short")],
+                                                                spatialLIBD = spe@colData[idx,c("spatialLIBD")],
+                                                                coord_x = spe@int_colData@listData[["spatialCoords"]][idx,1],
+                                                                coord_y = spe@int_colData@listData[["spatialCoords"]][idx,2],
+                                                                row = spe$array_row[idx],
+                                                                col = spe$array_col[idx]))
+    seu_ls[[i]] <- FindVariableFeatures(seu_ls[[i]], verbose = F)
+    #hvg_ls <- unique(c(hvg_ls,VariableFeatures(seurat_ls[[i]])))
+  }
+  seu_ls
+}
+
+
+```
+## From SpotClean Result
+
+```{r}
+new_spseu_ls <- function(){
+  # Convert to seurat list
+  seu_ls <- list()
+  #hvg_ls <- c()
+  sets_tokeep <- c("151507","151508","151669","151670","151673","151674")
+  
+  for(i in sets_tokeep){
+    seu_ls[[i]] <- CreateSeuratObject(counts = sp_obj_ls[[paste0("sp_",i)]]@assays@data@listData[["decont"]],
+                                         project = paste0("spe_",i),
+                                         meta.data = sp_obj_ls[[paste0("sp_",i)]]@metadata[["slide"]])
+    seu_ls[[i]] <- FindVariableFeatures(seu_ls[[i]], verbose = F)
+    #hvg_ls <- unique(c(hvg_ls,VariableFeatures(seurat_sp_ls[[i]])))
+  }
+  
+  for(i in sets_tokeep){
+    seu_ls[[i]]@meta.data[["coord_x"]] = seu_ls[[i]]@meta.data[["imagecol"]]
+    seu_ls[[i]]@meta.data[["coord_y"]] = seu_ls[[i]]@meta.data[["imagerow"]]
+    seu_ls[[i]]@meta.data[["layer"]]   = seu_ls[[i]]@meta.data[["layer_guess"]]
+  }
+}
+
+```
+
+
+# PRECAST Results
+
+```{r}
+
+##### Para Select #####
+#getXList <- function(seuList, genelist){
+#  require(Seurat)
+#  set.seed(101)
+#  seuList <- lapply(seuList, NormalizeData)
+#  XList <- list()
+#  nsample <- length(seuList)
+#  indexList <- list()
+#  nr <- 0
+#  yList <- list()
+#  posList <- list()
+#  for(i in 1:nsample){
+#    XList[[i]] <- Matrix::t(seuList[[i]]@assays$RNA@data[genelist,])
+#    indexList[[i]] <- (nr+1):(nrow(XList[[i]] )+nr)
+#    nr <- nr + nrow(XList[[i]] )
+#    y <- seuList[[i]]$layer
+#    y[is.na(y)] <- "NA"
+#    yList[[i]] <- y
+#    posList[[i]] <- cbind(seuList[[i]]$row, seuList[[i]]$col)
+#  }
+#  
+#  return(list(XList=XList, posList=posList, 
+#              yList=yList, 
+#              indxList=indexList))
+#}
+#
+#datList <- getXList(seurat_ls, hvg_ls)
+#XList <- datList$XList
+#posList <- datList$posList
+#yList <- datList$yList 
+#indexList <- datList$indxList
+#
+#K_set <- 2:11; q <- 15
+#tic <- proc.time() # 
+#set.seed(1) ## parallel computing
+#resList <- ICM.EM(XList, posList=posList, q=q, K=K_set, 
+#                 platform = 'Visium',maxIter = 30,
+#                 Sigma_equal =F, verbose=T,  coreNum=4, coreNum_int = 4)
+#toc <- proc.time()
+#
+##### One K #####
+## Create PRECASTObject.
+PRECAST_test <- function(seu_ls, k=7){
+  tic <- Sys.time()
+  PRECAST_obj <- CreatePRECASTObject(seu_ls, project = "SpatialLIBD", gene.number = 2000, selectGenesMethod = "SPARK-X",
+      premin.spots = 20, premin.features = 0, postmin.spots = 1, 
+      postmin.features = 0, verbose = F)
+  
+  PRECAST_obj <- AddAdjList(PRECAST_obj, platform = "Visium")
+  PRECAST_obj <- AddParSetting(PRECAST_obj, Sigma_equal = FALSE, verbose = F, int.model = NULL)
+  
+  PRECAST_obj <- PRECAST(PRECAST_obj, K = k)
+  PRECAST_obj <- SelectModel(PRECAST_obj)
+  seuInt <- IntegrateSpaData(PRECAST_obj, species = "Human")
+  toc <- Sys.time()
+  message(toc - tic)
+  seuInt
+}
+
+
+#cols_cluster <- chooseColors(palettes_name = "Classic 20", n_colors = 7, plot_colors = TRUE)
+#pList <- SpaPlot(seuInt, item = "cluster", batch = NULL, point_size = 1, cols = cols_cluster, combine = FALSE,
+#    nrow.legend = 7)
+#drawFigs(pList, layout.dim = c(2, 2), common.legend = TRUE, legend.position = "right", align = "hv")
+
+```
+
+
+# Multi-level + Seurat NN Clustering Results
+
+```{r}
+draw_slide_graph <- function(meta_data, edge_df, threshold, col_sel){
+  
+  edge_df[["x"]] <- meta_data[edge_df$from,'row']
+  edge_df[["y"]] <- meta_data[edge_df$from,'col']
+  edge_df[["xend"]] <- meta_data[edge_df$to,'row']
+  edge_df[["yend"]] <- meta_data[edge_df$to,'col']
+  
+  
+  g <- ggplot() + 
+    geom_segment(mapping = aes(x=x,y=y,xend=xend,yend=yend, 
+                               color=weight<threshold),
+                 size=abs(edge_df$weight)*2,
+                 data = edge_df) +
+    scale_color_manual(values = c("grey70","red"))+
+    new_scale_colour() +
+    geom_point(mapping = aes_string(x = "row", y = "col", color=col_sel), 
+               data = meta_data) + 
+    scale_color_discrete()+
+    theme_classic() 
+  return(g)
+}
+
+stage_1 <- function(seu_ls, cor_threshold = 0.2, nn = 12, cl_resolution = 10, top_pcs = 30, cl_min=5){
+  tic <- Sys.time()
+  for(i in names(seu_ls)){
+    #seu_ls[[i]] <- NormalizeData(seu_ls[[i]], normalization.method = "LogNormalize", scale.factor = 10000,verbose = F)
+    seu_ls[[i]] <- FindVariableFeatures(seu_ls[[i]], selection.method = "vst", nfeatures = 2000,verbose = F)
+    seu_ls[[i]] <- ScaleData(seu_ls[[i]], features = rownames(seu_ls[[i]]),verbose = F)
+    seu_ls[[i]] <- RunPCA(seu_ls[[i]], features = VariableFeatures(object = seu_ls[[i]]),verbose = F)
+    cor_mat <- cor(t(as.matrix(seu_ls[[i]]@reductions[["pca"]]@cell.embeddings[,1:top_pcs])),method = "pearson")
+    dist_mat <- matrix(0, nrow = nrow(cor_mat), ncol = ncol(cor_mat), 
+                       dimnames = list(colnames(cor_mat), row.names(cor_mat)))
+    
+    for(j in seq_len(nrow(dist_mat))){
+      dist_mat[,j] <- sqrt((seu_ls[[i]]@meta.data[["coord_x"]] - seu_ls[[i]]@meta.data[["coord_x"]][j])^2 + 
+                             (seu_ls[[i]]@meta.data[["coord_y"]] - seu_ls[[i]]@meta.data[["coord_y"]][j])^2)
+      not_nn_vec <- sort(dist_mat[,j])[(nn+2):ncol(dist_mat)] %>% names()
+      cor_mat[j,not_nn_vec] <- 0
+      cor_mat[j,j] <- 0
+    }
+    g <- graph.adjacency(cor_mat, mode = "directed", 
+                         weighted = TRUE, diag = TRUE)
+    
+    seu_ls[[i]]@misc[["raw_edges"]] <- as_data_frame(g,"edges")
+    seu_ls[[i]]@misc[["raw_graph_plot_label"]] <- 
+      draw_slide_graph(seu_ls[[i]]@meta.data,seu_ls[[i]]@misc[["raw_edges"]],
+                       cor_threshold,"layer")
+    
+    # Primary Clustering
+    cor_mat[cor_mat < cor_threshold] <- 0
+    g <- graph.adjacency(cor_mat, mode = "directed", 
+                         weighted = TRUE, diag = TRUE)
+    g <- as.undirected(g,mode = "mutual")
+    
+    seu_ls[[i]]@misc[["edges"]] <- as_data_frame(g,"edges")
+    seu_ls[[i]]@misc[["graph_plot_label"]] <- 
+      draw_slide_graph(seu_ls[[i]]@meta.data,seu_ls[[i]]@misc[["edges"]],
+                       cor_threshold,"layer")
+    
+    louvain_res <- cluster_louvain(g, resolution = cl_resolution)
+    seu_ls[[i]]@meta.data[["cluster"]] <- as.factor(louvain_res$membership)
+    
+    message(paste(i,"cluster number:",length(levels(as.factor(louvain_res$membership)))))
+    seu_ls[[i]]@misc[["graph_plot_cluster"]] <- 
+      draw_slide_graph(seu_ls[[i]]@meta.data,seu_ls[[i]]@misc[["edges"]],
+                       cor_threshold,"cluster") + theme(legend.position = "none")
+    
+    # Cluster merging
+    seu_ls[[i]]@meta.data[["merged_cluster"]] <- seu_ls[[i]]@meta.data[["cluster"]]
+    while(sum(table(seu_ls[[i]]@meta.data[["merged_cluster"]]) < cl_min) > 0){
+      sml_cl_idx <- names(table(seu_ls[[i]]@meta.data[["merged_cluster"]]))[table(seu_ls[[i]]@meta.data[["merged_cluster"]]) < cl_min]
+    
+      for(j in sml_cl_idx){
+        node_ls <- colnames(seu_ls[[i]])[seu_ls[[i]]@meta.data[["merged_cluster"]]==j]
+        nn_ls <- c()
+        for(node in node_ls){
+          nn_ls <- append(nn_ls,sort(dist_mat[,node])[1:(nn+1)] %>% names())
+        }
+        nn_ls <- nn_ls[!nn_ls %in% node_ls]
+        nn_cl <- seu_ls[[i]]@meta.data[["merged_cluster"]][colnames(seu_ls[[i]]) %in% nn_ls]
+        seu_ls[[i]]@meta.data[["merged_cluster"]][colnames(seu_ls[[i]]) %in% node_ls] <- names(sort(table(nn_cl),decreasing=TRUE)[1])
+      }
+      seu_ls[[i]]@meta.data[["merged_cluster"]] <- droplevels(seu_ls[[i]]@meta.data[["merged_cluster"]])
+      message(paste(i,"merged cluster number:",length(levels(seu_ls[[i]]@meta.data[["merged_cluster"]]))))
+    }
+  
+    
+    seu_ls[[i]]@misc[["graph_plot_cluster_merged"]] <- 
+      draw_slide_graph(seu_ls[[i]]@meta.data,seu_ls[[i]]@misc[["edges"]],
+                       cor_threshold,"merged_cluster") + theme(legend.position = "none")
+    
+  }
+  toc <- Sys.time()
+  message("Elasped Time(sec):")
+  message(toc - tic)
+  seu_ls
+}
+
+stage_2 <- function(seu_ls, top_pcs = 30, nn_2=10){
+  tic <- Sys.time()
+  hvg_union <- c()
+  gene_intersect <- row.names(seu_ls[[names(seu_ls)[1]]])
+  cl_num <- c()
+  
+  for(i in names(seu_ls)){
+    hvg_union <- union(hvg_union,VariableFeatures(object = seu_ls[[i]]))
+    gene_intersect <- intersect(gene_intersect, row.names(seu_ls[[i]]))
+    cl_num <- append(cl_num,c(length(levels(droplevels(seu_ls[[i]]@meta.data[["merged_cluster"]])))))
+  }
+  
+  hvg_union <- intersect(hvg_union, gene_intersect)
+  
+  cl_expr <- matrix(0, nrow = sum(cl_num),ncol = length(hvg_union))
+  cl_df <- data.frame(sample=rep(names(seu_ls),cl_num),cluster=0)
+  
+  for(i in names(seu_ls)){
+    cl_df[["cluster"]][cl_df$sample==i] <- levels(droplevels(seu_ls[[i]]@meta.data[["merged_cluster"]]))
+  }
+  row.names(cl_expr) <- paste0("X",cl_df$sample,"_",cl_df$cluster)
+  colnames(cl_expr) <- hvg_union
+  
+  for(i in seq_len(nrow(cl_df))){
+    idx <- which(seu_ls[[cl_df$sample[i]]]@meta.data$merged_cluster == cl_df$cluster[i])
+    cl_expr[i,] <-  seu_ls[[cl_df$sample[i]]]@assays[["RNA"]]@data[hvg_union,idx] %>% rowSums(.)/length(idx)
+  }
+  
+  cl_expr_obj <- CreateSeuratObject(t(cl_expr),verbose = F)
+  cl_expr_obj <- FindVariableFeatures(cl_expr_obj, selection.method = "vst", nfeatures = 2000,verbose = F)
+  cl_expr_obj <- ScaleData(cl_expr_obj, features = rownames(cl_expr_obj),verbose = F)
+  cl_expr_obj <- RunPCA(cl_expr_obj, features = VariableFeatures(object = cl_expr_obj),verbose = F)
+  cl_expr_obj <- RunUMAP(cl_expr_obj, dims = 1:top_pcs,verbose = F)
+  
+  cor_mat <- cor(t(as.matrix(cl_expr_obj@reductions[["pca"]]@cell.embeddings[,1:top_pcs])),method = "pearson")
+  
+  for(j in seq_len(nrow(cor_mat))){
+      not_nn_vec <- sort(cor_mat[,j],decreasing = T)[(nn_2+2):ncol(cor_mat)] %>% names()
+      cor_mat[j,not_nn_vec] <- 0
+      cor_mat[j,j] <- 0
+  }
+  
+  g <- graph.adjacency(cor_mat, mode = "directed", 
+                         weighted = TRUE, diag = TRUE)
+  g <- as.undirected(g,mode = "mutual")
+  
+  louvain_res <- cluster_louvain(g, resolution = 1)
+  #table(louvain_res$membership)
+  cl_df[["louvain"]] <- as.character(louvain_res$membership)
+  sml_cl_idx <- names(table(cl_df[["louvain"]]))[table(cl_df[["louvain"]]) < 2]
+  cl_df[["louvain"]][cl_df[["louvain"]] %in% sml_cl_idx] <- NA
+  
+  
+  cl_df[["umap_1"]] <- cl_expr_obj@reductions[["umap"]]@cell.embeddings[,1]
+  cl_df[["umap_2"]] <- cl_expr_obj@reductions[["umap"]]@cell.embeddings[,2]
+  cl_df[["layer"]] <- apply(cl_df,1,
+                            FUN = function(x){
+                              idx <- seu_ls[[x[["sample"]] ]]@meta.data[["merged_cluster"]] == as.numeric(x[["cluster"]])
+                              layer_vec <- seu_ls[[x[["sample"]] ]]@meta.data[["layer"]][idx]
+                              table(layer_vec) %>% sort(decreasing = T) %>% names() %>% .[1]
+                              
+                            })
+  toc <- Sys.time()
+  message("Elasped Time(sec):")
+  message(toc - tic)
+  cl_df
+}
+
+assign_label <- function(seu_ls, cl_df,nn){
+  # Assign secondary clustering label
+  for(i in names(seu_ls)){
+    seu_ls[[i]]@meta.data[[paste0("sec_cluster_",nn)]] <- apply(seu_ls[[i]]@meta.data,1,
+                                                       FUN = function(x){
+                                                         cl_df$louvain[cl_df$sample==i & cl_df$cluster==x[["merged_cluster"]]]
+                                                       })
+    seu_ls[[i]]@misc[["graph_plot_cluster_secondary"]] <- 
+      draw_slide_graph(seu_ls[[i]]@meta.data,seu_ls[[i]]@misc[["edges"]],
+                       cor_threshold,"sec_cluster") +
+      labs(title = paste("sample:", i))
+  }
+  seu_ls
+}
+
+```
+
+
+
+
+```{r}
+cl_df_ls <- list()
+
+##### Try 2LC #####
+seurat_ls <- new_seu_ls()
+ari_df <- data.frame(ID = names(seurat_ls),
+                     nn_6 = 0,
+                     nn_12 = 0,
+                     nn_18 = 0,
+                     sp_nn_6 = 0,
+                     sp_nn_12 = 0,
+                     sp_nn_18 = 0,
+                     PRECAST_6 = 0,
+                     PRECAST_7 = 0,
+                     PRECAST_8 = 0,
+                     PRECAST_log_6 = 0,
+                     PRECAST_log_7 = 0,
+                     PRECAST_log_8 = 0,
+                     row.names = names(seurat_ls))
+
+for(k in c(6,12,18)){
+  message("Running K=",k)
+  seurat_ls <- stage_1(seurat_ls,nn = k)
+  cl_df_ls[[paste0("nn_",k)]] <- stage_2(seurat_ls)
+  seurat_ls <- assign_label(seurat_ls,cl_df_ls[[paste0("nn_",k)]],k)
+  gc()
+}
+
+
+##### Try PRECAST logcount #####
+for(k in c(6,7,8)){
+  message("Running K=",k)
+  seuInt <- PRECAST_test(seurat_ls,k=k)
+  gc()
+  for(i in seq_along(names(seurat_ls))){
+    seurat_ls[[names(seurat_ls)[i]]]@meta.data[[paste0("PRECAST_",k)]] <- 
+        seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==i]
+  }
+}
+#### Calc ARI and rm
+combined_meta <- NULL
+for(i in names(seurat_ls)){
+  if(is.null(combined_meta)){
+    combined_meta <- data.frame(ID = i,
+                                seurat_ls[[i]]@meta.data,
+                                PRECAST =seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(names(seurat_ls)==i)]
+                                )
+  }else{
+    combined_meta <- rbind(combined_meta,
+                              data.frame(ID = i,seurat_ls[[i]]@meta.data,
+                                         PRECAST = seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(names(seurat_ls)==i)]
+                                         ))
+  }
+  for(k in c(6,12,18)){
+    ari_df[i,paste0("nn_",k)] <- mclust::adjustedRandIndex(combined_meta[[paste0("sec_cluster_",k)]][combined_meta$ID==i],
+                                               combined_meta$layer[combined_meta$ID==i])
+  }
+  for(k in c(6,7,8)){
+    ari_df[i,paste0("PRECAST_log_",k)] <- mclust::adjustedRandIndex(combined_meta[[paste0("PRECAST_",k)]][combined_meta$ID==i],
+                                            combined_meta$layer[combined_meta$ID==i])
+  }
+}
+##### Try PRECAST count #####
+rm(seurat_ls)
+gc()
+seurat_ls <- new_seu_ls(sel_assay = "counts")
+for(k in c(6,7,8)){
+  message("Running K=",k)
+  seuInt <- PRECAST_test(seurat_ls,k=k)
+  gc()
+  for(i in seq_along(names(seurat_ls))){
+    seurat_ls[[names(seurat_ls)[i]]]@meta.data[[paste0("PRECAST_",k)]] <- 
+        seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==i]
+  }
+}
+# Update ARI
+combined_meta <- NULL
+for(i in names(seurat_ls)){
+  if(is.null(combined_meta)){
+    combined_meta <- data.frame(ID = i,
+                                seurat_ls[[i]]@meta.data,
+                                PRECAST =seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(names(seurat_ls)==i)]
+                                )
+  }else{
+    combined_meta <- rbind(combined_meta,
+                              data.frame(ID = i,seurat_ls[[i]]@meta.data,
+                                         PRECAST = seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(names(seurat_ls)==i)]
+                                         ))
+  }
+
+  for(k in c(6,7,8)){
+    ari_df[i,paste0("PRECAST_",k)] <- mclust::adjustedRandIndex(combined_meta[[paste0("PRECAST_",k)]][combined_meta$ID==i],
+                                            combined_meta$layer[combined_meta$ID==i])
+  }
+}
+
+##### Try 2LC w/ SpotClean #####
+
+
+spseurat_ls <- new_spseu_ls()
+for(k in c(6,12,18)){
+  seurat_ls <- stage_1(seurat_ls,nn = k)
+  cl_df_ls[[paste0("sp_nn_",k)]] <- stage_2(seurat_ls)
+  seurat_ls <- assign_label(seurat_ls,cl_df_ls[[paste0("nn_",k)]],k)
+}
+
+
+
+
+
+
+
+
+
+
+
+library(reshape2)
+ggplot(ari_df[,1:4] %>% melt(id.vars='ID') , aes(x = variable,y=value)) + 
+  geom_boxplot() + 
+  geom_point() + 
+  ylab("ARI") +
+  theme_classic()
+
+
+ggplot(cl_df,aes(x=umap_1,y=umap_2, color=louvain)) + 
+  geom_point()+
+  theme_classic()
+
+ggplot(cl_df,aes(x=umap_1,y=umap_2, color=layer)) + 
+  geom_point()+
+  theme_classic()
+
+ggplot(cl_df,aes(x=umap_1,y=umap_2, color=sample)) + 
+  geom_point()+
+  theme_classic()
+
+
+plot_ls <- list()
+for(i in unique(spe$sample_id)){
+  plot_ls[[i]] <-  seurat_ls[[i]]@misc[["graph_plot_cluster_secondary"]] 
+}
+
+ggarrange(plotlist = plot_ls, nrow = 3, ncol = 4)
+
+plot_ls <- list()
+for(i in unique(spe$sample_id)){
+  plot_ls[[i]] <-  seurat_ls[[i]]@misc[["raw_graph_plot_label"]] 
+}
+
+ggarrange(plotlist = plot_ls, nrow = 3, ncol = 4)
+
+```
+
+```{r }
+combined_meta <- NULL
+
+for(i in names(seurat_ls)){
+  if(is.null(combined_meta)){
+    combined_meta <- seurat_ls[[i]]@meta.data
+  }else{
+    combined_meta <- rbind(combined_meta,seurat_ls[[i]]@meta.data)
+  }
+}
+
+summ_combined_meta <- combined_meta %>% group_by(orig.ident, cluster) %>% summarise(n=n())
+
+ggplot(summ_combined_meta, aes(x = orig.ident, y = n, fill = orig.ident)) + 
+  geom_violin() + 
+  geom_boxplot(width=0.1, fill="white") +
+  labs(title = "Spot # before merging") + 
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45,vjust = 0.5)) 
+
+summ_combined_meta <- combined_meta %>% group_by(orig.ident, merged_cluster) %>% summarise(n=n())
+
+ggplot(summ_combined_meta, aes(x = orig.ident, y = n, fill = orig.ident)) + 
+  geom_violin() + 
+  geom_boxplot(width=0.1, fill="white") +
+  labs(title = "Spot # after merging") + 
+  theme_classic() +
+  theme(axis.text.x = element_text(angle=45,vjust = 0.5)) 
+
+
+```
+
+
+
+### ARI Benchmark
+
+```{r }
+combined_meta <- NULL
+
+ari_df <- data.frame(ID = sets_tokeep,
+                     nn_6 = 0,
+                     nn_12 = 0,
+                     nn_18 = 0,
+                     PRECAST = 0,
+                     row.names = sets_tokeep)
+
+for(i in sets_tokeep){
+  if(is.null(combined_meta)){
+    combined_meta <- data.frame(ID = i,
+                                seurat_ls[[i]]@meta.data#,
+                                #PRECAST = seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(sample_vec==i)]
+                                )
+  }else{
+    if(i=="151510"){
+      combined_meta <- rbind(combined_meta,
+                              data.frame(ID = i,seurat_ls[[i]]@meta.data))#[-567,],
+                                         #PRECAST = seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(sample_vec==i)])
+    }else{
+      combined_meta <- rbind(combined_meta,
+                              data.frame(ID = i,seurat_ls[[i]]@meta.data))
+                                         #PRECAST = seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(sample_vec==i)]))
+    }
+    
+  }
+#  ari_df[i,"nn_6"] <- mclust::adjustedRandIndex(combined_meta$sec_cluster_6[combined_meta$ID==i],
+#                                              combined_meta$layer[combined_meta$ID==i])
+  ari_df[i,"nn_12"] <- mclust::adjustedRandIndex(combined_meta$sec_cluster_12[combined_meta$ID==i],
+                                              combined_meta$layer[combined_meta$ID==i])
+#  ari_df[i,"nn_18"] <- mclust::adjustedRandIndex(combined_meta$sec_cluster_18[combined_meta$ID==i],
+#                                              combined_meta$layer[combined_meta$ID==i])
+#  ari_df[i,"PRECAST"] <- mclust::adjustedRandIndex(combined_meta$PRECAST[combined_meta$ID==i],
+#                                              combined_meta$layer[combined_meta$ID==i])
+}
+
+plotConfusionMatrix <- function(x,y,col_title = ""){
+  na_index <- (is.na(x) | is.na(y))
+  x <- x[!na_index]
+  y <- y[!na_index]
+  u_x <- unique(x)
+  u_y <- unique(y)
+  hm_mat <- matrix(0, nrow = length(u_x), ncol = length(u_y))
+  row.names(hm_mat) <- u_x
+  colnames(hm_mat) <- u_y
+  for(i in seq_len(length(u_x))){
+    for(j in seq_len(length(u_y))){
+      hm_mat[i,j] = sum(x==u_x[i] & y ==u_y[j])
+    }
+  }
+  hm_mat <- hm_mat/matrix(rep(rowSums(hm_mat),ncol(hm_mat)), 
+                          byrow = F,nrow = nrow(hm_mat), ncol = ncol(hm_mat))
+  Heatmap(hm_mat,cluster_columns = F, cluster_rows = F,
+          col = colorRamp2(seq(0, 1,length.out=5), viridis::viridis(5)),
+          rect_gp = gpar(col = "white", lwd = 1),column_title = col_title)
+}
+
+
+
+plot_ls <- list()
+
+plot_ls[[1]] <- plotConfusionMatrix(combined_meta$sec_cluster_6,
+                                    combined_meta$layer,"NN=6")
+plot_ls[[2]] <- plotConfusionMatrix(combined_meta$sec_cluster_12,
+                                    combined_meta$layer,"NN=12")
+plot_ls[[3]] <- plotConfusionMatrix(combined_meta$sec_cluster_18,
+                                    combined_meta$layer,"NN=18")
+plot_ls[[4]] <- plotConfusionMatrix(combined_meta$PRECAST,
+                                    combined_meta$layer,"PRECAST")
+
+plot_ls[[5]] <- plotConfusionMatrix(combined_meta$sec_cluster_6,
+                                    combined_meta$ID,"NN=6")
+plot_ls[[6]] <- plotConfusionMatrix(combined_meta$sec_cluster_12,
+                                    combined_meta$ID,"NN=12")
+plot_ls[[7]] <- plotConfusionMatrix(combined_meta$sec_cluster_18,
+                                    combined_meta$ID,"NN=18")
+plot_ls[[8]] <- plotConfusionMatrix(combined_meta$PRECAST,
+                                    combined_meta$ID,"PRECAST")
+
+plot_ls[[1]] + plot_ls[[2]] + plot_ls[[3]] + plot_ls[[4]]
+
+
+
+wilcox.test(ari_df$nn_12,ari_df$PRECAST)
+
+```
+
+
+
