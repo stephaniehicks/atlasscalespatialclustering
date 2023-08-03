@@ -182,7 +182,7 @@ ehub <- ExperimentHub::ExperimentHub()
 
 spe <- fetch_data(type = "spe", eh = ehub, destdir = "E:/share_hdd/research/sce/")
 
-#sp_obj_ls <- readRDS("~/RScripts/SpotCleaned_obj_ls.RDS")
+sp_obj_ls <- readRDS("~/RScripts/SpotCleaned_obj_ls2.RDS")
 ```
 Ground Truth
 
@@ -211,7 +211,8 @@ new_seu_ls <- function(sel_assay="logcounts"){
     idx <- spe$sample_id == i
     seu_ls[[i]] <- CreateSeuratObject(counts = spe@assays@data@listData[[sel_assay]][,idx],
                                          project = paste0("spe_",i),
-                                         meta.data = data.frame(layer = spe@colData[idx,c("layer_guess_reordered_short")],
+                                         meta.data = data.frame(barcode = spe@colData@rownames[idx],
+                                                                layer = spe@colData[idx,c("layer_guess_reordered_short")],
                                                                 spatialLIBD = spe@colData[idx,c("spatialLIBD")],
                                                                 coord_x = spe@int_colData@listData[["spatialCoords"]][idx,1],
                                                                 coord_y = spe@int_colData@listData[["spatialCoords"]][idx,2],
@@ -228,11 +229,11 @@ new_seu_ls <- function(sel_assay="logcounts"){
 ## From SpotClean Result
 
 ```{r}
+sets_tokeep <- c('151507','151508','151509','151510','151669','151670','151671','151672','151673','151674','151675','151676')
 new_spseu_ls <- function(){
   # Convert to seurat list
   seu_ls <- list()
   #hvg_ls <- c()
-  sets_tokeep <- c("151507","151508","151669","151670","151673","151674")
   
   for(i in sets_tokeep){
     seu_ls[[i]] <- CreateSeuratObject(counts = sp_obj_ls[[paste0("sp_",i)]]@assays@data@listData[["decont"]],
@@ -247,6 +248,7 @@ new_spseu_ls <- function(){
     seu_ls[[i]]@meta.data[["coord_y"]] = seu_ls[[i]]@meta.data[["imagerow"]]
     seu_ls[[i]]@meta.data[["layer"]]   = seu_ls[[i]]@meta.data[["layer_guess"]]
   }
+  seu_ls
 }
 
 ```
@@ -301,8 +303,8 @@ new_spseu_ls <- function(){
 PRECAST_test <- function(seu_ls, k=7){
   tic <- Sys.time()
   PRECAST_obj <- CreatePRECASTObject(seu_ls, project = "SpatialLIBD", gene.number = 2000, selectGenesMethod = "SPARK-X",
-      premin.spots = 20, premin.features = 0, postmin.spots = 1, 
-      postmin.features = 0, verbose = F)
+      premin.spots = 20, premin.features = 20, postmin.spots = 1, 
+      postmin.features = 10, verbose = F)
   
   PRECAST_obj <- AddAdjList(PRECAST_obj, platform = "Visium")
   PRECAST_obj <- AddParSetting(PRECAST_obj, Sigma_equal = FALSE, verbose = F, int.model = NULL)
@@ -493,7 +495,7 @@ stage_2 <- function(seu_ls, top_pcs = 30, nn_2=10){
   cl_df
 }
 
-assign_label <- function(seu_ls, cl_df,nn){
+assign_label <- function(seu_ls, cl_df,nn,cor_threshold = 0.2){
   # Assign secondary clustering label
   for(i in names(seu_ls)){
     seu_ls[[i]]@meta.data[[paste0("sec_cluster_",nn)]] <- apply(seu_ls[[i]]@meta.data,1,
@@ -502,7 +504,7 @@ assign_label <- function(seu_ls, cl_df,nn){
                                                        })
     seu_ls[[i]]@misc[["graph_plot_cluster_secondary"]] <- 
       draw_slide_graph(seu_ls[[i]]@meta.data,seu_ls[[i]]@misc[["edges"]],
-                       cor_threshold,"sec_cluster") +
+                       cor_threshold,paste0("sec_cluster_",nn)) +
       labs(title = paste("sample:", i))
   }
   seu_ls
@@ -510,7 +512,7 @@ assign_label <- function(seu_ls, cl_df,nn){
 
 ```
 
-
+## Run
 
 
 ```{r}
@@ -548,8 +550,12 @@ for(k in c(6,7,8)){
   seuInt <- PRECAST_test(seurat_ls,k=k)
   gc()
   for(i in seq_along(names(seurat_ls))){
-    seurat_ls[[names(seurat_ls)[i]]]@meta.data[[paste0("PRECAST_",k)]] <- 
-        seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==i]
+    tmp_df <- data.frame(barcode = row.names(seuInt@meta.data) %>% 
+                           str_sub(start = 1, end = 18))
+    tmp_df[[paste0("PRECAST_",k)]] <- seuInt@meta.data[["cluster"]]
+    tmp_df <- left_join(seurat_ls[[names(seurat_ls)[i]]]@meta.data, 
+                        tmp_df[seuInt@meta.data[["batch"]]==i,], by="barcode")
+    seurat_ls[[names(seurat_ls)[i]]]@meta.data[[paste0("PRECAST_",k)]] <- tmp_df[[paste0("PRECAST_",k)]]
   }
 }
 #### Calc ARI and rm
@@ -557,14 +563,10 @@ combined_meta <- NULL
 for(i in names(seurat_ls)){
   if(is.null(combined_meta)){
     combined_meta <- data.frame(ID = i,
-                                seurat_ls[[i]]@meta.data,
-                                PRECAST =seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(names(seurat_ls)==i)]
-                                )
+                                seurat_ls[[i]]@meta.data)
   }else{
     combined_meta <- rbind(combined_meta,
-                              data.frame(ID = i,seurat_ls[[i]]@meta.data,
-                                         PRECAST = seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(names(seurat_ls)==i)]
-                                         ))
+                              data.frame(ID = i,seurat_ls[[i]]@meta.data))
   }
   for(k in c(6,12,18)){
     ari_df[i,paste0("nn_",k)] <- mclust::adjustedRandIndex(combined_meta[[paste0("sec_cluster_",k)]][combined_meta$ID==i],
@@ -584,23 +586,24 @@ for(k in c(6,7,8)){
   seuInt <- PRECAST_test(seurat_ls,k=k)
   gc()
   for(i in seq_along(names(seurat_ls))){
-    seurat_ls[[names(seurat_ls)[i]]]@meta.data[[paste0("PRECAST_",k)]] <- 
-        seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==i]
+    tmp_df <- data.frame(barcode = row.names(seuInt@meta.data) %>% 
+                           str_sub(start = 1, end = 18))
+    tmp_df[[paste0("PRECAST_",k)]] <- seuInt@meta.data[["cluster"]]
+    tmp_df <- left_join(seurat_ls[[names(seurat_ls)[i]]]@meta.data, 
+                        tmp_df[seuInt@meta.data[["batch"]]==i,], by="barcode")
+    seurat_ls[[names(seurat_ls)[i]]]@meta.data[[paste0("PRECAST_",k)]] <- tmp_df[[paste0("PRECAST_",k)]]
   }
 }
 # Update ARI
+combined_meta_bk <- combined_meta 
 combined_meta <- NULL
 for(i in names(seurat_ls)){
   if(is.null(combined_meta)){
     combined_meta <- data.frame(ID = i,
-                                seurat_ls[[i]]@meta.data,
-                                PRECAST =seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(names(seurat_ls)==i)]
-                                )
+                                seurat_ls[[i]]@meta.data)
   }else{
     combined_meta <- rbind(combined_meta,
-                              data.frame(ID = i,seurat_ls[[i]]@meta.data,
-                                         PRECAST = seuInt@meta.data[["cluster"]][seuInt@meta.data[["batch"]]==which(names(seurat_ls)==i)]
-                                         ))
+                              data.frame(ID = i,seurat_ls[[i]]@meta.data))
   }
 
   for(k in c(6,7,8)){
@@ -610,31 +613,49 @@ for(i in names(seurat_ls)){
 }
 
 ##### Try 2LC w/ SpotClean #####
-
-
+rm(seurat_ls)
+gc()
 spseurat_ls <- new_spseu_ls()
+plot_ls <- list()
 for(k in c(6,12,18)){
-  seurat_ls <- stage_1(seurat_ls,nn = k)
-  cl_df_ls[[paste0("sp_nn_",k)]] <- stage_2(seurat_ls)
-  seurat_ls <- assign_label(seurat_ls,cl_df_ls[[paste0("nn_",k)]],k)
+  spseurat_ls <- stage_1(spseurat_ls,nn = k)
+  cl_df_ls[[paste0("sp_nn_",k)]] <- stage_2(spseurat_ls)
+  spseurat_ls <- assign_label(spseurat_ls,cl_df_ls[[paste0("sp_nn_",k)]],k)
+  for(i in sets_tokeep){
+    plot_ls[[paste0("sp",i,"_nn_",k)]] <- spseurat_ls[[i]]@misc[["graph_plot_cluster_secondary"]]
+  }
+  
 }
 
+ggarrange(plotlist = plot_ls[1:12], nrow = 3, ncol = 4)
 
+combined_meta <- NULL
+for(i in names(spseurat_ls)){
+  if(is.null(combined_meta)){
+    combined_meta <- data.frame(ID = i,
+                                spseurat_ls[[i]]@meta.data
+                                )
+  }else{
+    combined_meta <- rbind(combined_meta,
+                              data.frame(ID = i,spseurat_ls[[i]]@meta.data
+                                         ))
+  }
 
-
-
-
-
-
-
-
+  for(k in c(6,12,18)){
+    ari_df[i,paste0("sp_nn_",k)] <- mclust::adjustedRandIndex(as.numeric(combined_meta[[paste0("sec_cluster_",k)]][combined_meta$ID==i]),
+                                               combined_meta$layer[combined_meta$ID==i])
+  }
+}
 
 library(reshape2)
-ggplot(ari_df[,1:4] %>% melt(id.vars='ID') , aes(x = variable,y=value)) + 
-  geom_boxplot() + 
+ggplot(ari_df %>% melt(id.vars='ID') %>% 
+         subset(ID %in% sets_tokeep | !(variable %in% c("sp_nn_6","sp_nn_12","sp_nn_18"))), 
+       aes(x = variable,y=value, fill=variable)) + 
+  geom_boxplot(color="black", width=0.5) + 
   geom_point() + 
   ylab("ARI") +
-  theme_classic()
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
 
 
 ggplot(cl_df,aes(x=umap_1,y=umap_2, color=louvain)) + 
