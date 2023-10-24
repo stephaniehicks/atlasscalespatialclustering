@@ -1,0 +1,227 @@
+---
+title: "Stage2_opt"
+author: "Anonymous"
+date: "2023-08-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("~/GitHub/atlasscalespatialclustering/haowen_update/R/func.R")
+init()
+```
+
+## Get Data Run PRECAST
+
+```{r cars}
+## Connect to ExperimentHub
+ehub <- ExperimentHub::ExperimentHub()
+## Download the small example sce data
+#spe <- my_fetch_data(type = "sce", eh = ehub, destdir = "E:/share_hdd/research/sce/") %>% sce_to_spe()
+
+spe <- fetch_data(type = "spe", eh = ehub, destdir = "E:/share_hdd/research/sce/")
+
+
+seurat_ls <- new_seu_ls(sel_assay = "counts")
+#saveRDS(seurat_ls,file = "SpatialLIBD_12brain_samples.RDS")
+getwd()
+seurat_ls <- readRDS("SpatialLIBD_12brain_samples.RDS")
+
+k=40
+message("Running K=",k)
+seuInt <- PRECAST_test(seurat_ls,k=k)
+gc()
+for(i in seq_along(names(seurat_ls))){
+  tmp_df <- data.frame(barcode = row.names(seuInt@meta.data) %>% 
+                         str_sub(start = 1, end = 18))
+  tmp_df[[paste0("PRECAST_",k)]] <- seuInt@meta.data[["cluster"]]
+  tmp_df <- left_join(seurat_ls[[names(seurat_ls)[i]]]@meta.data[,c("barcode","layer")], 
+                      tmp_df[seuInt@meta.data[["batch"]]==i,], by="barcode")
+  seurat_ls[[names(seurat_ls)[i]]]@meta.data[[paste0("PRECAST_",k)]] <- paste0("sp",i,"_",tmp_df[[paste0("PRECAST_",k)]])
+}
+
+
+cols_cluster <- chooseColors(palettes_name = "Hue n", n_colors = k, plot_colors = TRUE)
+pList <- SpaPlot(seuInt, item = "cluster", batch = NULL, point_size = 1, cols = cols_cluster, combine = FALSE,
+    nrow.legend = 7)
+drawFigs(pList, layout.dim = c(2, 2), common.legend = TRUE, legend.position = "right", align = "hv")
+
+
+```
+
+## Baseline
+
+Previous algorithm:
+
+```{r pressure, echo=FALSE}
+rtn_ls <- list()
+seurat_ls <- stage_1(seurat_ls, cor_threshold = 0.2, nn = 12, cl_resolution = 10, top_pcs = 10, cl_min=5, preprocess = T)
+rtn_ls[["Ori_MNN3"]] <- stage_2(seurat_ls,cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 10,method = "MNN")
+seurat_ls <- assign_label(seurat_ls, rtn_ls[["Ori_MNN3"]]$cl_df, "MNN3", cl_key = "merged_cluster")
+
+rtn_ls[["louvain"]] <- stage_2(seurat_ls,cl_key = "PRECAST_40",rtn_seurat = T)
+seurat_ls <- assign_label(seurat_ls, rtn_ls[["louvain"]]$cl_df, "louvain", cl_key = "PRECAST_40")
+rtn_ls[["MNN1"]] <- stage_2(seurat_ls,cl_key = "PRECAST_40",rtn_seurat = T,nn_2 = 1,method = "MNN")
+rtn_ls[["MNN2"]] <- stage_2(seurat_ls,cl_key = "PRECAST_40",rtn_seurat = T,nn_2 = 2,method = "MNN")
+rtn_ls[["MNN3"]] <- stage_2(seurat_ls,cl_key = "PRECAST_40",rtn_seurat = T,nn_2 = 3,method = "MNN")
+seurat_ls <- assign_label(seurat_ls, rtn_ls[["MNN1"]]$cl_df, "MNN1", cl_key = "PRECAST_40")
+seurat_ls <- assign_label(seurat_ls, rtn_ls[["MNN2"]]$cl_df, "MNN2", cl_key = "PRECAST_40")
+seurat_ls <- assign_label(seurat_ls, rtn_ls[["MNN3"]]$cl_df, "MNN3", cl_key = "PRECAST_40")
+
+cl_df <- subset(rtn_ls[["MNN1"]]$cl_df,!is.na(louvain))
+cl_df <- rtn_ls[["MNN1"]]$cl_df
+cl_df[["PRECAST"]] <- sapply(cl_df$cluster,
+                             function(x){str_split(x,pattern = "_") %>% unlist %>% .[2]})
+
+ggplot(cl_df,aes(x=umap_1,y=umap_2, color=louvain)) + 
+  geom_point()+
+  theme_classic()
+
+ggplot(cl_df,aes(x=umap_1,y=umap_2, color=PRECAST)) + 
+  geom_point()+
+  theme_classic()
+
+ggplot(cl_df,aes(x=umap_1,y=umap_2, color=layer)) + 
+  geom_point()+
+  theme_classic()
+
+ggplot(cl_df,aes(x=umap_1,y=umap_2, color=sample)) + 
+  geom_point()+
+  theme_classic()
+
+
+plotConfusionMatrix(cl_df$PRECAST,paste0("L_",cl_df$louvain),"PRECAST")
+
+
+```
+
+Compare
+
+```{r}
+ari_df <- data.frame(ID = names(seurat_ls),
+                     Louvain = 0,
+                     MNN1 = 0,
+                     MNN2 = 0,
+                     MNN3 = 0,
+                     row.names = names(seurat_ls))
+combined_meta <- NULL
+ref_label="layer"
+for(i in names(seurat_ls)){
+  if(is.null(combined_meta)){
+    combined_meta <- data.frame(ID = i,
+                                seurat_ls[[i]]@meta.data)
+  }else{
+    combined_meta <- rbind(combined_meta,
+                              data.frame(ID = i,seurat_ls[[i]]@meta.data))
+  }
+
+  ari_df[i,2] <- mclust::adjustedRandIndex(combined_meta[["sec_cluster_louvain"]][combined_meta$ID==i],
+                                            combined_meta[[ref_label]][combined_meta$ID==i])
+  ari_df[i,3] <- mclust::adjustedRandIndex(combined_meta[["sec_cluster_MNN1"]][combined_meta$ID==i],
+                                            combined_meta[[ref_label]][combined_meta$ID==i])
+  ari_df[i,4] <- mclust::adjustedRandIndex(combined_meta[["sec_cluster_MNN2"]][combined_meta$ID==i],
+                                            combined_meta[[ref_label]][combined_meta$ID==i])
+  ari_df[i,5] <- mclust::adjustedRandIndex(combined_meta[["sec_cluster_MNN3"]][combined_meta$ID==i],
+                                            combined_meta[[ref_label]][combined_meta$ID==i])
+}
+
+
+ggplot(ari_df %>% melt(id.vars='ID'), 
+       aes(x = variable,y=value, fill=variable)) + 
+  geom_boxplot(color="black", width=0.5) + 
+  geom_point() + 
+  ylab("ARI") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
+
+
+```
+
+```{r }
+cl_key <- "MNN1"
+plot_ls <- list()
+for(i in names(seurat_ls)[c(1,5,9)]){
+  plot_ls[[i]] <- seurat_ls[[i]]@misc[[paste0("graph_plot_cluster_sec_",cl_key)]]
+}
+
+ggarrange(plotlist = plot_ls, ncol = 1, nrow = 3)
+
+
+```
+
+
+```{r}
+# Try adjust PCs and edge weight
+seurat_ls <- stage_1(seurat_ls,preprocess = T, top_pcs = 8, cor_threshold = 0.5)
+ElbowPlot(seurat_ls[["151507"]])
+tmp_df <- cbind(seurat_ls[["151507"]]@meta.data,seurat_ls[["151507"]]@reductions$pca@cell.embeddings)
+
+ggarrange(plotlist = list("PC1"=draw_slide_graph(tmp_df,seurat_ls[["151507"]]@misc[["raw_edges"]],NULL,"PC_1"),
+                          "PC2"=draw_slide_graph(tmp_df,seurat_ls[["151507"]]@misc[["raw_edges"]],NULL,"PC_2"),
+                          "PC3"=draw_slide_graph(tmp_df,seurat_ls[["151507"]]@misc[["raw_edges"]],NULL,"PC_3"),
+                          "PC4"=draw_slide_graph(tmp_df,seurat_ls[["151507"]]@misc[["raw_edges"]],NULL,"PC_4")),ncol = 2,nrow = 2)
+
+
+ggarrange(plotlist = list("MNN1"=draw_edge_dstr(seurat_ls[["151507"]]@misc[["raw_edges"]], "weight", "151507"),
+                          "MNN2"=draw_edge_dstr(seurat_ls[["151669"]]@misc[["raw_edges"]], "weight", "151669"),
+                          "MNN3"=draw_edge_dstr(seurat_ls[["151673"]]@misc[["raw_edges"]], "weight", "151673")),ncol = 2,nrow = 2)
+
+rtn_ls <- stage_2(seurat_ls, cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 3,method = "MNN",top_pcs = 8)
+seurat_ls <- assign_label(seurat_ls, rtn_ls$cl_df, "MNN", cl_key = "merged_cluster")
+
+layer_pal <- RColorBrewer::brewer.pal(7,"Set1")
+names(layer_pal) <- c("L1", "L2", "L3", "L4", "L5", "L6", "WM")
+
+
+ggarrange(plotlist = list("MNN1"=draw_slide_graph(seurat_ls[["151507"]]@meta.data,NULL,NULL,"sec_cluster_MNN"),
+                          "GT1"=draw_slide_graph(seurat_ls[["151507"]]@meta.data,NULL,NULL,"layer", layer_pal),
+                          "MNN2"=draw_slide_graph(seurat_ls[["151669"]]@meta.data,NULL,NULL,"sec_cluster_MNN"),
+                          "GT2"=draw_slide_graph(seurat_ls[["151669"]]@meta.data,NULL,NULL,"layer", layer_pal),
+                          "MNN3"=draw_slide_graph(seurat_ls[["151673"]]@meta.data,NULL,NULL,"sec_cluster_MNN"),
+                          "GT3"=draw_slide_graph(seurat_ls[["151673"]]@meta.data,NULL,NULL,"layer", layer_pal)),ncol = 2,nrow = 3)
+
+f <- factor(rtn_ls[["cl_df"]]$layer)
+vcols <- chooseColors(palettes_name = "Blink 23", n_colors = length(levels(f)), plot_colors = F)
+cols_cluster <- vcols[f]
+plot(rtn_ls[["g"]], layout = layout_with_kk(g),vertex.size=3, vertex.color=cols_cluster, vertex.label.cex=0.1)
+
+ggplot(rtn_ls$cl_df,aes(x=umap_1, y=umap_2, color = layer)) + 
+    geom_point() + scale_color_manual(values = layer_pal) +
+    theme_classic()
+
+ggplot(rtn_ls$cl_df,aes(x=umap_1, y=umap_2, color = louvain)) + 
+  geom_point() + 
+  theme_classic()
+
+```
+## Smoothed Edge Detection
+
+
+```{r}
+seurat_ls <- stage_1(seurat_ls,preprocess = T, top_pcs = 8, cor_threshold = 0.6, edge_smoothing = T, nn = 6, use_glmpca = T)
+
+ElbowPlot(seurat_ls[["151507"]])
+
+
+rtn_ls <- stage_2(seurat_ls, cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 10,method = "MNN",top_pcs = 8, use_glmpca = T, rare_ct = "m")
+seurat_ls <- assign_label(seurat_ls, rtn_ls$cl_df, "MNN", cl_key = "merged_cluster")
+
+layer_pal <- RColorBrewer::brewer.pal(7,"Set1")
+names(layer_pal) <- c("L1", "L2", "L3", "L4", "L5", "L6", "WM")
+
+
+ggarrange(plotlist = list("Edge1"=draw_edge_dstr(seurat_ls[["151507"]]@misc[["raw_edges"]], "weight", "151507"),
+                          "MNN1"= draw_slide_graph(seurat_ls[["151507"]]@meta.data,NULL,NULL,"sec_cluster_MNN"),
+                          "GT1"=  draw_slide_graph(seurat_ls[["151507"]]@meta.data,NULL,NULL,"layer", layer_pal),
+                          "Edge2"=draw_edge_dstr(seurat_ls[["151669"]]@misc[["raw_edges"]], "weight", "151669"),
+                          "MNN2"= draw_slide_graph(seurat_ls[["151669"]]@meta.data,NULL,NULL,"sec_cluster_MNN"),
+                          "GT2"=  draw_slide_graph(seurat_ls[["151669"]]@meta.data,NULL,NULL,"layer", layer_pal),
+                          "Edge3"=draw_edge_dstr(seurat_ls[["151673"]]@misc[["raw_edges"]], "weight", "151673"),
+                          "MNN3"= draw_slide_graph(seurat_ls[["151673"]]@meta.data,NULL,NULL,"sec_cluster_MNN"),
+                          "GT3"=  draw_slide_graph(seurat_ls[["151673"]]@meta.data,NULL,NULL,"layer", layer_pal)),
+          ncol = 3,nrow = 3)
+
+
+
+
+```

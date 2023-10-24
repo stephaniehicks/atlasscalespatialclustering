@@ -1,0 +1,494 @@
+---
+title: "Simulation study"
+author: "Anonymous"
+date: "2023-08-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(SpatialExperiment)
+library(STexampleData)
+library(scater)             # log-transformation
+library(here)
+library(Seurat)
+source("~/GitHub/atlasscalespatialclustering/haowen_update/R/func.R")
+init()
+```
+
+## Helper Function
+
+```{r helper functions}
+# * Smooth & Circular -------------------------------------------------------
+smth_circ_fun <- function(x, y){ (x-0.5)^2 + (y-0.5)^2 }
+
+# * Smooth & Linear -------------------------------------------------------
+smth_lnr_fun <- function(x, y) { 0.5-x + 0.5-y }
+
+
+# * Layered & Circular -------------------------------------------------------
+# Calcualte center of the graph
+lyr_circ_fun <- function(x,y){
+  # ret <- NA_real_
+  dplyr::case_when(
+    (0.5-x)^2 + (0.5-y)^2 < (0.125)^2 ~ 40,
+    (0.5-x)^2 + (0.5-y)^2 < (0.25)^2 ~ 30,
+    (0.5-x)^2 + (0.5-y)^2 < (0.375)^2 ~ 20,
+    (0.5-x)^2 + (0.5-y)^2 < (1)^2 ~ 10,
+    TRUE ~ NA_real_
+  )
+  # return(ret)
+}
+
+# * Layered & Linear -------------------------------------------------------
+lyr_lnr_fun <- function(x,y){
+  # ret <- NA_real_
+  dplyr::case_when(
+    1.5 - x - y <= 0 ~ 40,
+    1 - x - y < 0 ~ 30,
+    0.5 - x - y < 0 ~ 20,
+    0 - x - y < 0 ~ 10,
+    TRUE ~ NA_real_
+  )
+}
+
+# Corresponding Functions to Create Covariates ----------------------------
+# * Layered Pattern -------------------------------------------------------
+# Caliberate
+
+lnr_group_fun <- function(x,y){
+  dplyr::case_when(
+    1.5 - x - y <= 0 ~ "Group 1",
+    1 - x - y < 0 ~ "Group 2",
+    0.5 - x - y < 0 ~ "Group 3",
+    0 - x - y < 0 ~  "Group 4",
+    TRUE ~ NA_character_
+  )
+}
+
+# # * Circular Pattern -------------------------------------------------------
+circ_group_fun <- function(x,y){
+  dplyr::case_when(
+    (0.5-x)^2 + (0.5-y)^2 < (0.125)^2 ~ "Group 1",
+    (0.5-x)^2 + (0.5-y)^2 < (0.25)^2 ~ "Group 2",
+    (0.5-x)^2 + (0.5-y)^2 < (0.375)^2 ~ "Group 3",
+    (0.5-x)^2 + (0.5-y)^2 < (1)^2 ~ "Group 4",
+    TRUE ~ NA_character_
+  )
+}
+
+semicirc_group_fun <- function(x,y){
+  dplyr::case_when(
+    (0.5-x)^2 + y^2 < (0.2)^2 ~ "Group 1",
+    (0.5-x)^2 + y^2 < (0.4)^2 ~ "Group 2",
+    (0.5-x)^2 + y^2 < (0.6)^2 ~ "Group 3",
+    (0.5-x)^2 + y^2 < (0.8)^2  ~ "Group 4",
+    (0.5-x)^2 + y^2 < 1.25 ~ "Group 5",
+    TRUE ~ NA_character_
+  )
+}
+
+qurtcirc_group_fun <- function(x,y){
+  dplyr::case_when(
+    x^2 + y^2 < (0.3)^2 ~ "Group 1",
+    x^2 + y^2 < (0.6)^2 ~ "Group 2",
+    x^2 + y^2 < (0.8)^2 ~ "Group 3",
+    x^2 + y^2 < (0.95)^2 ~ "Group 4",
+    x^2 + y^2 < 2 ~ "Group 6",
+    TRUE ~ NA_character_
+  )
+}
+
+norm <- function(x){
+  (x - min(x))/ (max(x) - min(x))
+}
+
+tmp_spe <- Visium_humanDLPFC()# Visium Template
+
+assign_celltype <- function(probs, cell_max = 1){
+  stopifnot(sum(probs) == 1)
+  sample.int(length(probs), sample(seq_len(cell_max),1),
+             prob = probs, replace = T)
+}
+
+
+```
+
+```{r simulation function}
+## Test parameters
+#it <- 1
+#
+#
+#n_gene <- 200
+#n_group <- 4
+#n_celltype = 4
+#
+#noise <- 0.2
+#ig_ratio=0.8
+#cell_max = 3
+# Group by celltype matrix
+pattern_vec <- c("lnr","circ","semicirc","qurtcirc")
+map_mat <- matrix(c(0.9,0.03,0.04,0.03,
+                    0.2,0.6,0.05,0.15,
+                    0.25,0.25,0.25,0.25,
+                    0.1,0.1,0.1,0.7),nrow = 4, byrow = T)
+
+
+my_sim <- function(it = 1, tmp_spe, n_gene = 200, noise = 0.2, ig_ratio = 1, top_pcs = 30, 
+                   n_group = 4, n_celltype = 4, map_mat = NULL, cell_max = 1,
+                   segmentation = T, integration = T){
+  n_spots <- ncol(tmp_spe)
+  stopifnot(ig_ratio<=1)
+  stopifnot(ncol(map_mat)==n_celltype)
+  seu_ls <- list()
+  set.seed(it)
+  
+  if(is.null(map_mat)){
+    map_mat <- matrix(0,nrow = n_group, ncol = n_celltype, byrow = T)
+    for(i in 1:n_group) map_mat[i,i] <- 1
+  }
+
+  row.names(map_mat) <- paste("Group",1:n_group)
+  colnames(map_mat) <- paste0("Celltype_",1:n_celltype)
+  
+  total_gene_num <- round(n_gene*n_celltype/ig_ratio)
+  # Ground truth ranking
+  rowData_df <- data.frame(
+    gene_idx  = 1:total_gene_num, 
+    mu_shift = runif(n = total_gene_num, min = 2, max = 4),# Different mean expression level
+    var_scale = runif(n = total_gene_num, min = 1, max = 4) # Different effect size
+  ) |> 
+    mutate(gene_name = paste0("gene_", gene_idx),
+           marker=ifelse(ceiling(gene_idx/n_gene) <= n_celltype,
+                         paste0("Celltype_",ceiling(gene_idx/n_gene)),
+                         "noise")) |> 
+    column_to_rownames("gene_name")
+  
+  # Choose one of the spatial pattern
+  for(pattern in c("lnr","circ","semicirc","qurtcirc")) {
+    message(paste("Simulating Pattern",pattern))
+    str_func <- switch(pattern,
+                       "lnr"=lnr_group_fun,
+                       "circ"=circ_group_fun,
+                       "semicirc"=semicirc_group_fun,
+                       "qurtcirc"=qurtcirc_group_fun) 
+    set.seed(it)
+    spa_str_df <- spatialCoords(tmp_spe) |> 
+      data.frame() |> 
+      mutate(
+        x = norm(pxl_col_in_fullres),
+        y = norm(pxl_row_in_fullres),
+        z = str_func(
+          x, y
+        ),
+        cell_type = sapply(z,
+                           FUN = function(x){
+                             paste0("Celltype_",
+                                    assign_celltype(map_mat[x,], cell_max)) %>%
+                               paste(collapse = ",")
+                             }),
+        cell_num = sapply(cell_type,
+                          FUN = function(x){
+                            str_split(x,pattern=',') %>% unlist() %>% length()
+                          })
+                          
+        #std_z = scale(z) # standardized
+      )
+    # Check cell type ratio
+    
+    for(i in 1:n_celltype){
+      spa_str_df[[paste0("Celltype_",i)]] <- sapply(spa_str_df$cell_type,
+                                                    FUN = function(x){
+                                                      str_count(x,pattern = paste0("Celltype_",i))
+                                                    })
+    }
+    
+    #stopifnot(all(!is.na(spa_str_df$std_z)))
+    # Check region
+    #ggplot(spa_str_df,aes(x=pxl_col_in_fullres,y=pxl_row_in_fullres, color=as.factor(z))) + 
+    #  geom_point() + 
+    #  theme_classic()
+    # Simulated raw counts following Poisson noise
+    # gene by spot
+    gene_count_mat <- 
+      map2(.x = rowData_df$mu_shift,
+           #.y = rowData_df$var_scale,
+           .y = rowData_df$marker,
+           .f = function(shift, markers){
+             #eta_vec <- spa_str_df$std_z*scale + shift
+             if(markers=="noise"){
+               eta_vec <- rep(shift,n_spots)
+               ret_vec <- rnorm(
+                n = n_spots,
+                mean = eta_vec,
+                sd = noise
+              )
+              
+             } 
+             else{
+               cell_type_vec <- str_split(spa_str_df$cell_type,pattern = ",") %>% unlist()
+               eta_vec <- (cell_type_vec == markers)*shift
+               tmp_vec <- rnorm(
+                n = length(eta_vec),
+                mean = eta_vec,
+                sd = noise
+                )
+               l_vec <- r_vec <- cumsum(spa_str_df$cell_num)
+               l_vec[2:length(r_vec)] <- r_vec[2:length(r_vec) - 1]+1
+               l_vec[1] = 1
+               ret_vec <- sapply(1:nrow(spa_str_df),
+                                 FUN = function(x){
+                                   mean(tmp_vec[l_vec[x]:r_vec[x]])
+                                 })
+             }
+             
+             stopifnot(length(ret_vec) == n_spots)
+             return(data.frame(`gene_` = ret_vec))
+           }) |> 
+      list_cbind() |> 
+      t()
+    
+    
+    rownames(gene_count_mat) <- rownames(rowData_df)
+    colnames(gene_count_mat) <- rownames(spa_str_df)
+    
+    seu_obj <- CreateSeuratObject(counts = gene_count_mat,
+                                  project = "tmp_seurat",
+                                  meta.data = spa_str_df)
+    seu_obj <- ScaleData(seu_obj, features = row.names(seu_obj), do.scale = F, do.center = F)
+    #DoHeatmap(seu_obj, features = row.names(seu_obj)[c(1:10,201:210,401:410,601:610,801:810)],group.by = "z") + NoLegend()
+    seu_ls[[pattern]] <- seu_obj
+  }
+  # Create Seurat
+  pattern_vec <- c("lnr","circ","semicirc","qurtcirc")
+  
+  #ggplot(seu_obj@meta.data,aes(x = as.factor(cell_num))) + 
+  #  geom_histogram(stat="count") +
+  #  theme_classic()
+  for(pattern in pattern_vec){
+    seu_ls[[pattern]]@meta.data[["layer"]] = seu_ls[[pattern]]@meta.data[["z"]]
+    seu_ls[[pattern]]@meta.data[["coord_x"]] = seu_ls[[pattern]]@meta.data[["x"]]*1000
+    seu_ls[[pattern]]@meta.data[["coord_y"]] = seu_ls[[pattern]]@meta.data[["y"]]*1000
+    seu_ls[[pattern]]@meta.data[["row"]] = seu_ls[[pattern]]@meta.data[["pxl_row_in_fullres"]]
+    seu_ls[[pattern]]@meta.data[["col"]] = seu_ls[[pattern]]@meta.data[["pxl_col_in_fullres"]]
+    seu_ls[[pattern]]@misc[["group"]] <- draw_slide_graph(seu_ls[[pattern]]@meta.data,col_sel = "z")
+  }
+  
+  if(segmentation) seu_ls <- stage_1(seu_ls,preprocess = F, top_pcs = top_pcs)
+  if(segmentation & integration){
+    rtn_ls <- stage_2(seu_ls,cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 1,method = "MNN", top_pcs = top_pcs)
+    seu_ls <- assign_label(seu_ls,rtn_ls[["cl_df"]], "MNN", cl_key = "merged_cluster")
+  }
+  seu_ls
+}
+
+
+
+```
+
+
+
+## Optimal Data
+
+
+```{r optimal}
+
+seu_ls <-my_sim(it=1, tmp_spe=tmp_spe, n_gene=200, noise = 0.2, ig_ratio=1)
+
+seu_ls[["lnr"]]@misc[["graph_plot_cluster_sec_MNN"]]
+seu_ls[["lnr"]]@misc[["graph_plot_cluster_merged"]]
+seu_ls[["circ"]]@misc[["graph_plot_cluster_sec_MNN"]]
+seu_ls[["circ"]]@misc[["graph_plot_cluster_merged"]]
+
+
+
+ggplot(seu_ls[["lnr"]]@meta.data,aes(x=pxl_col_in_fullres,y=pxl_row_in_fullres, color=as.factor(z))) + 
+  geom_point() + 
+  theme_classic()
+
+
+
+```
+
+
+
+## Increase Noise
+
+
+```{r noise}
+seu_ls <-my_sim(it=1, tmp_spe=tmp_spe, n_gene=200, noise = 1, ig_ratio=1)
+
+
+```
+
+## Add non-informative genes
+
+
+```{r n-informative}
+seu_ls <- my_sim(it=1, tmp_spe=tmp_spe, n_gene=200, noise = 0.2, ig_ratio=0.5, top_pcs = 4)
+
+tmp_df <- cbind(seu_ls[["lnr"]]@meta.data,seu_ls[["lnr"]]@reductions$pca@cell.embeddings)
+
+ggarrange(plotlist = list("PC1"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_1"),
+                          "PC2"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_2"),
+                          "PC3"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_3"),
+                          "PC4"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_4")),ncol = 2,nrow = 2)
+
+draw_edge_dstr(seu_ls[["lnr"]]@misc[["raw_edges"]], "weight")
+
+  
+for(pattern in c("lnr","circ","semicirc","qurtcirc")){
+  seu_ls[[pattern]] <- FindNeighbors(seu_ls[[pattern]], dims = 1:10)
+  seu_ls[[pattern]] <- FindClusters(seu_ls[[pattern]], resolution = 0.5)
+  markers_df <- FindAllMarkers(seu_ls[[pattern]], only.pos = TRUE, min.pct = 0.25, logfc.threshold = 1)
+  seu_ls[[pattern]] <- seu_ls[[pattern]][markers_df$gene,]
+}
+  DoHeatmap(seu_ls[["circ"]], features = row.names(seu_obj)[c(1:10,201:210,401:410,601:610)],group.by = "z") + NoLegend()
+
+  seu_ls <- stage_1(seu_ls,preprocess = F)
+  rtn_ls <- stage_2(seu_ls,cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 1,method = "MNN")
+  seu_ls <- assign_label(seu_ls,rtn_ls[["cl_df"]], "MNN", cl_key = "merged_cluster")
+
+
+```
+
+## Simulation with Cell types
+
+```{r}
+pattern_vec <- c("lnr","circ","semicirc","qurtcirc")
+map_mat <- matrix(c(0.9,0.03,0.04,0.03,
+                    0.2,0.6,0.05,0.15,
+                    0.25,0.25,0.25,0.25,
+                    0.1,0.1,0.1,0.7),nrow = 4, byrow = T)
+
+seu_ls <- my_sim(it=1, tmp_spe=tmp_spe, n_gene=200, noise = 0.2, ig_ratio=0.9, top_pcs = 4, map_mat = map_mat,
+                 segmentation = F)
+
+
+DoHeatmap(seu_ls[[pattern_vec[4]]], features = row.names(seu_obj)[c(1:10,201:210,401:410,601:610,801:810)],group.by = "z") + NoLegend()
+
+seu_ls <- stage_1(seu_ls,preprocess = F, top_pcs = 4, cor_threshold = 0.6)
+ElbowPlot(seu_ls[["lnr"]])
+tmp_df <- cbind(seu_ls[["lnr"]]@meta.data,seu_ls[["lnr"]]@reductions$pca@cell.embeddings)
+
+ggarrange(plotlist = list("PC1"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_1"),
+                          "PC2"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_2"),
+                          "PC3"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_3"),
+                          "PC4"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_4")),ncol = 2,nrow = 2)
+
+draw_edge_dstr(seu_ls[["lnr"]]@misc[["raw_edges"]], "weight")
+
+
+
+
+rtn_ls <- stage_2(seu_ls,cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 1,method = "MNN", top_pcs = 4)
+seu_ls <- assign_label(seu_ls,rtn_ls[["cl_df"]], "MNN", cl_key = "merged_cluster")
+
+
+
+```
+## Simulation with Mixed Cell types
+
+```{r }
+# 4 groups
+seu_ls <- my_sim(it=1, tmp_spe=tmp_spe, n_gene=200, noise = 0.2, ig_ratio=0.9, top_pcs = 4, map_mat = map_mat, cell_max = 3,
+                 segmentation = F)
+
+ggarrange(plotlist = list("Celltype_1"=draw_slide_graph(seu_ls[["lnr"]]@meta.data, NULL, NULL,"Celltype_1"),
+                          "Celltype_2"=draw_slide_graph(seu_ls[["lnr"]]@meta.data, NULL, NULL,"Celltype_2"),
+                          "Celltype_3"=draw_slide_graph(seu_ls[["lnr"]]@meta.data, NULL, NULL,"Celltype_3"),
+                          "Celltype_4"=draw_slide_graph(seu_ls[["lnr"]]@meta.data, NULL, NULL,"Celltype_4")),ncol = 2,nrow = 2)
+
+# 5
+map_mat2 <- matrix(c(0.9,0.03,0.04,0.03,0,
+                    0.2,0.6,0.05,0.15,0,
+                    0.25,0.25,0.25,0.25,0,
+                    0.1,0.1,0.1,0.7,0,
+                    0,0,0,0,1),nrow = 5, byrow = T)
+seu_ls <- my_sim(it=1, tmp_spe=tmp_spe, n_gene=200, noise = 0.2, ig_ratio=0.9, top_pcs = 4, map_mat = map_mat2, cell_max = 3,
+                 segmentation = F,n_group = 5, n_celltype = 5)
+
+# 5
+map_mat3 <- matrix(c(0.90,0.03,0.04,0.03,0.00,0.00,
+                     0.20,0.60,0.05,0.15,0.00,0.00,
+                     0.25,0.25,0.25,0.25,0.00,0.00,
+                     0.10,0.10,0.10,0.70,0.00,0.00,
+                     0.02,0.02,0.02,0.02,0.90,0.02,
+                     0.02,0.02,0.02,0.02,0.02,0.90),nrow = 6, byrow = T)
+map_mat3 <- matrix(c(0.90,0.03,0.04,0.03,0.00,0.00,
+                     0.00,0.90,0.05,0.05,0.00,0.00,
+                     0.05,0.05,0.90,0.00,0.00,0.00,
+                     0.03,0.04,0.03,0.90,0.00,0.00,
+                     0.02,0.02,0.02,0.02,0.90,0.02,
+                     0.02,0.02,0.02,0.02,0.02,0.90),nrow = 6, byrow = T)
+seu_ls <- my_sim(it=1, tmp_spe=tmp_spe, n_gene=200, noise = 0.2, ig_ratio=0.9, top_pcs = 4, map_mat = map_mat3, cell_max = 3,
+                 segmentation = F,n_group = 6, n_celltype = 6)
+
+
+group_pal <- RColorBrewer::brewer.pal(6,"Set1")
+names(group_pal) <- c("Group 1", "Group 2", "Group 3", "Group 4", "Group 5", "Group 6")
+
+ggarrange(plotlist = list("lnr"=seu_ls[["lnr"]]@misc[["group"]] + scale_colour_manual(values = group_pal),
+                          "circ"=seu_ls[["circ"]]@misc[["group"]] + scale_colour_manual(values = group_pal),
+                          "semicirc"=seu_ls[["semicirc"]]@misc[["group"]] + scale_colour_manual(values = group_pal),
+                          "qurtcirc"=seu_ls[["qurtcirc"]]@misc[["group"]] + scale_colour_manual(values = group_pal)),
+          ncol = 4,nrow = 1)
+
+
+# Calc
+seu_ls <- stage_1(seu_ls,preprocess = F, top_pcs = 6, cor_threshold = 0.5, edge_smoothing = T, nn = 6, use_glmpca = T, cor_slot = "PC")
+
+
+ElbowPlot(seu_ls[["lnr"]])
+sample_name = "lnr"
+tmp_df <- cbind(seu_ls[[sample_name]]@meta.data,seu_ls[[sample_name]]@reductions$pca@cell.embeddings)
+
+ggarrange(plotlist = list("PC1"=draw_slide_graph(tmp_df,seu_ls[[sample_name]]@misc[["raw_edges"]],NULL,"PC1"),
+                          "PC2"=draw_slide_graph(tmp_df,seu_ls[[sample_name]]@misc[["raw_edges"]],NULL,"PC2"),
+                          "PC3"=draw_slide_graph(tmp_df,seu_ls[[sample_name]]@misc[["raw_edges"]],NULL,"PC3"),
+                          "PC4"=draw_slide_graph(tmp_df,seu_ls[[sample_name]]@misc[["raw_edges"]],NULL,"PC4")),ncol = 2,nrow = 2)
+
+draw_edge_dstr(seu_ls[["lnr"]]@misc[["raw_edges"]], "weight")
+draw_slide_graph(seu_ls[[sample_name]]@meta.data,seu_ls[[sample_name]]@misc[["raw_edges"]],0.5,"z")
+
+rtn_ls <- stage_2(seu_ls,cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 1,method = "MNN", 
+                  top_pcs = 6, use_glmpca = T, cor_slot = "PC", rare_ct = "a")
+
+seu_ls <- assign_label(seu_ls,rtn_ls[["cl_df"]], "MNN", cl_key = "merged_cluster")
+
+ggarrange(plotlist = list("PC1"=draw_slide_graph(seu_ls[["lnr"]]@meta.data,NULL,NULL,"sec_cluster_MNN"),
+                          "PC2"=draw_slide_graph(seu_ls[["circ"]]@meta.data,NULL,NULL,"sec_cluster_MNN"),
+                          "PC3"=draw_slide_graph(seu_ls[["semicirc"]]@meta.data,NULL,NULL,"sec_cluster_MNN"),
+                          "PC4"=draw_slide_graph(seu_ls[["qurtcirc"]]@meta.data,NULL,NULL,"sec_cluster_MNN")),ncol = 2,nrow = 2)
+
+draw_slide_graph(seu_ls[["lnr"]]@meta.data,NULL,NULL,"sec_cluster_MNN")
+
+```
+Smoothed Edge Detection
+
+```{r}
+seu_ls <- my_sim(it=1, tmp_spe=tmp_spe, n_gene=200, noise = 0.2, ig_ratio=0.9, 
+                 top_pcs = 4, map_mat = map_mat, cell_max = 3,
+                 segmentation = F)
+
+
+seu_ls <- stage_1(seu_ls, preprocess = F, top_pcs = 4, cor_threshold = 0.8, edge_smoothing = T, nn = 6)
+ElbowPlot(seu_ls[["lnr"]])
+tmp_df <- cbind(seu_ls[["lnr"]]@meta.data,seu_ls[["lnr"]]@reductions$pca@cell.embeddings)
+
+ggarrange(plotlist = list("PC1"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_1"),
+                          "PC2"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_2"),
+                          "PC3"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_3"),
+                          "PC4"=draw_slide_graph(tmp_df,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"PC_4")),ncol = 2,nrow = 2)
+draw_slide_graph(seu_ls[["lnr"]]@meta.data, seu_ls[["lnr"]]@misc[["raw_edges"]],0.8,"z")
+draw_edge_dstr(seu_ls[["lnr"]]@misc[["raw_edges"]], "weight")
+draw_slide_graph(seu_ls[["lnr"]]@meta.data,seu_ls[["lnr"]]@misc[["raw_edges"]],NULL,"merged_cluster")
+
+rtn_ls <- stage_2(seu_ls,cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 10,method = "MNN", top_pcs = 4)
+seu_ls <- assign_label(seu_ls,rtn_ls[["cl_df"]], "MNN", cl_key = "merged_cluster")
+
+```
+
+
+
