@@ -198,12 +198,12 @@ ggplot(rtn_ls$cl_df,aes(x=umap_1, y=umap_2, color = louvain)) +
 
 
 ```{r}
-seurat_ls <- stage_1(seurat_ls,preprocess = T, top_pcs = 8, cor_threshold = 0.6, edge_smoothing = T, nn = 6, use_glmpca = T)
+seurat_ls <- stage_1(seurat_ls,preprocess = T, top_pcs = 8, cor_threshold = 0.6, edge_smoothing = T, nn = 6, use_glmpca = T, use_leiden = F)
 
-ElbowPlot(seurat_ls[["151507"]])
+#ElbowPlot(seurat_ls[["151507"]])
 
 
-rtn_ls <- stage_2(seurat_ls, cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 10,method = "MNN",top_pcs = 8, use_glmpca = T, rare_ct = "m")
+rtn_ls <- stage_2(seurat_ls, cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 10,method = "MNN",top_pcs = 8, use_glmpca = T, rare_ct = "m", resolution = 1)
 seurat_ls <- assign_label(seurat_ls, rtn_ls$cl_df, "MNN", cl_key = "merged_cluster")
 
 layer_pal <- RColorBrewer::brewer.pal(7,"Set1")

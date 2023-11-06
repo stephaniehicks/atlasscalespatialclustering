@@ -30,22 +30,31 @@ swap <- function(vec){
 
 
 # Convert to seurat list
-new_seu_ls <- function(sel_assay="logcounts"){
+new_seu_ls <- function(sel_assay="logcounts",
+                       sel_col = c("layer","spatialLIBD"),
+                       col_name = c("layer_guess_reordered_short","spatialLIBD")){
   seu_ls <- list()
   #hvg_ls <- c()
   #sel_assay <- "logcounts" # counts logcounts
+  stopifnot(is.null(sel_col) | length(sel_col) == length(col_name))
   
   for(i in unique(spe$sample_id)){
     idx <- spe$sample_id == i
+    meta_df <- data.frame(barcode = spe@colData@rownames[idx],
+                          coord_x = spe@int_colData@listData[["spatialCoords"]][idx,1],
+                          coord_y = spe@int_colData@listData[["spatialCoords"]][idx,2],
+                          row = spe$array_row[idx],
+                          col = spe$array_col[idx],
+                          row.names = colnames(spe@assays@data@listData[[sel_assay]])[idx])
+    if(!is.null(sel_col)){
+      for(j in seq_along(sel_col)){
+        meta_df[[col_name[j]]] <- spe@colData[idx,sel_col[i]]
+      }
+    }
+    
     seu_ls[[i]] <- CreateSeuratObject(counts = spe@assays@data@listData[[sel_assay]][,idx],
                                       project = paste0("spe_",i),
-                                      meta.data = data.frame(barcode = spe@colData@rownames[idx],
-                                                             layer = spe@colData[idx,c("layer_guess_reordered_short")],
-                                                             spatialLIBD = spe@colData[idx,c("spatialLIBD")],
-                                                             coord_x = spe@int_colData@listData[["spatialCoords"]][idx,1],
-                                                             coord_y = spe@int_colData@listData[["spatialCoords"]][idx,2],
-                                                             row = spe$array_row[idx],
-                                                             col = spe$array_col[idx]))
+                                      meta.data = meta_df)
     seu_ls[[i]] <- FindVariableFeatures(seu_ls[[i]], verbose = F)
     #hvg_ls <- unique(c(hvg_ls,VariableFeatures(seurat_ls[[i]])))
   }
@@ -76,13 +85,13 @@ new_spseu_ls <- function(){
 
 
 ##### Create PRECASTObjec #####
-PRECAST_test <- function(seu_ls, k=7){
+PRECAST_test <- function(seu_ls, k=7, gene_num=2000){
   tic <- Sys.time()
-  PRECAST_obj <- CreatePRECASTObject(seu_ls, project = "SpatialLIBD", gene.number = 2000, selectGenesMethod = "SPARK-X",
+  PRECAST_obj <- CreatePRECASTObject(seu_ls, project = "SpatialLIBD", gene.number = gene_num, selectGenesMethod = "SPARK-X",
                                      premin.spots = 20, premin.features = 20, postmin.spots = 1, 
                                      postmin.features = 10, verbose = F)
   
-  PRECAST_obj <- AddAdjList(PRECAST_obj, platform = "Visium")
+  PRECAST_obj <- AddAdjList(PRECAST_obj, platform = "Visium", type = "fixed_number")
   PRECAST_obj <- AddParSetting(PRECAST_obj, Sigma_equal = FALSE, verbose = F, int.model = NULL)
   
   PRECAST_obj <- PRECAST(PRECAST_obj, K = k)
@@ -106,7 +115,7 @@ draw_PRECAST <- function(seuInt_obj, k=7){
 }
 
 ##### Multi-level + Seurat NN Clustering Results #####
-draw_slide_graph <- function(meta_data, edge_df=NULL, threshold=NULL, col_sel, pal = NULL){
+draw_slide_graph <- function(meta_data, edge_df=NULL, threshold=NULL, col_sel, pal = NULL,  flip = T){
   g <- ggplot()
   if(!is.null(edge_df)){
     edge_df[["x"]] <- meta_data[edge_df$from,'coord_x']
@@ -138,9 +147,9 @@ draw_slide_graph <- function(meta_data, edge_df=NULL, threshold=NULL, col_sel, p
     if(is.null(pal))    g <- g + scale_color_discrete()
     else g <- g + scale_colour_manual(values = pal)
   }
-    g <- g + theme_classic() +coord_flip()
-  
-  return(g)
+    g <- g + theme_classic()
+  if(flip)g +coord_flip()
+  g
 }
 
 
@@ -154,16 +163,16 @@ draw_edge_dstr <-  function(edge_df, col_sel, sample_name = ""){
   return(g)
 }
 
-stage_1 <- function(seu_ls, cor_threshold = 0.2, nn = 12, cl_resolution = 10, 
-                    top_pcs = 30, cl_min=5, preprocess = T, hvg = 2000, cor_slot = "PC", edge_smoothing = F, use_glmpca = F){
+stage_1 <- function(seu_ls, cor_threshold = 0.2, nn = 12, nn_2=20, cl_resolution = 10, 
+                    top_pcs = 30, cl_min=5, preprocess = T, hvg = 2000, cor_slot = "PC", 
+                    edge_smoothing = F, use_glmpca = F, use_leiden = F){
   tic <- Sys.time()
   for(i in names(seu_ls)){
     #seu_ls[[i]] <- NormalizeData(seu_ls[[i]], normalization.method = "LogNormalize", scale.factor = 10000,verbose = F)
+    stopifnot("Not supported Cor Calc Method" = cor_slot %in% c("PC","HVG","SNN"))
     if(preprocess){
       stopifnot("HVG# Exceeded" = hvg <= nrow(seu_ls[[i]]))
       seu_ls[[i]] <- FindVariableFeatures(seu_ls[[i]], selection.method = "vst", nfeatures = hvg,verbose = F)
-      seu_ls[[i]] <- ScaleData(seu_ls[[i]], features = rownames(seu_ls[[i]]),verbose = F)
-      
     }else{
       VariableFeatures(object = seu_ls[[i]]) <- row.names(seu_ls[[i]])
       hvg <- nrow(seu_ls[[i]])
@@ -171,80 +180,94 @@ stage_1 <- function(seu_ls, cor_threshold = 0.2, nn = 12, cl_resolution = 10,
     require(scater)
     require(scry)
     
-    seu_ls[[i]] <- RunPCA(seu_ls[[i]], features = VariableFeatures(object = seu_ls[[i]]),verbose = F)
     
     if(use_glmpca == T){
       mat <- as.matrix(seu_ls[[i]]@assays$RNA@counts[VariableFeatures(object = seu_ls[[i]]),])
       mat <- nullResiduals(mat, type="deviance")
-      res1 <- suppressWarnings(calculatePCA(mat,ncomponents = top_pcs, scale = TRUE, BSPARAM = BiocSingular::RandomParam()))
-      seu_ls[[i]]@reductions[["pca"]]@cell.embeddings <- res1 %>% as.matrix()
+      PCA_res <- suppressWarnings(calculatePCA(mat,ncomponents = top_pcs, scale = TRUE, BSPARAM = BiocSingular::RandomParam()))
+      seu_ls[[i]]@misc[["glmpca"]] <- PCA_res %>% as.matrix()
       #seu_ls[[i]]@reductions[["pca"]]@feature.loadings <- res1$loadings %>% as.matrix()
-    } 
+      rm(mat)
+      gc()
+    }else{
+      seu_ls[[i]] <- ScaleData(seu_ls[[i]], features = rownames(seu_ls[[i]]),verbose = F)
+      seu_ls[[i]] <- RunPCA(seu_ls[[i]], features = VariableFeatures(object = seu_ls[[i]]),verbose = F)
+      PCA_res <- seu_ls[[i]]@reductions[["pca"]]@cell.embeddings
+    }
     
-    stopifnot("Not supported Cor Calc Method" = cor_slot %in% c("PC","HVG"))
+    dist_knn <- dbscan::kNN(seu_ls[[i]]@meta.data %>% select(coord_x,coord_y),k=nn)
+    if(cor_slot == "SNN") expr_knn <- dbscan::kNN(PCA_res[,1:top_pcs],k=nn_2)
     
     if(!edge_smoothing){
-      if(cor_slot == "PC"){
-        cor_mat <- cor(t(as.matrix(seu_ls[[i]]@reductions[["pca"]]@cell.embeddings[,1:top_pcs])),method = "pearson")
-      } else if(cor_slot == "HVG") cor_mat <- cor(seu_ls[[i]]@assays[["RNA"]]@scale.data[VariableFeatures(object = seu_ls[[i]]),],method = "pearson")
-      
-      dist_mat <- matrix(0, nrow = ncol(seu_ls[[i]]), ncol = ncol(cor_mat), 
-                         dimnames = list(colnames(cor_mat), row.names(cor_mat)))
-      
-      for(j in seq_len(nrow(dist_mat))){
-        dist_mat[,j] <- sqrt((seu_ls[[i]]@meta.data[["coord_x"]] - seu_ls[[i]]@meta.data[["coord_x"]][j])^2 + 
-                               (seu_ls[[i]]@meta.data[["coord_y"]] - seu_ls[[i]]@meta.data[["coord_y"]][j])^2)
-        not_nn_vec <- sort(dist_mat[,j])[(nn+2):ncol(dist_mat)] %>% names()
-        cor_mat[j,not_nn_vec] <- 0
-        cor_mat[j,j] <- 0
+      seq_vec <- seq_len(ncol(seu_ls[[i]]))
+      if(cor_slot == "SNN"){
+        expr_knn <- dbscan::kNN(PCA_res[,1:top_pcs],k=nn_2)
+        cor_mat <- matrix(NA, nrow = ncol(seu_ls[[i]]), ncol = ncol(seu_ls[[i]]), 
+                          dimnames = list(colnames(seu_ls[[i]]), colnames(seu_ls[[i]])))
+        for(j in seq_vec){
+          for(k in unlist(dist_knn$id[j,])){
+            if(!is.na(cor_mat[j,k]) | !is.na(cor_mat[k,j])) next
+            
+            snn_num <- length(intersect(unlist(expr_knn$id[j,]),
+                                        unlist(expr_knn$id[k,])))
+            cor_mat[j,k] <- snn_num
+            cor_mat[k,j] <- snn_num
+          }
+        }
+        cor_mat[is.na(cor_mat)] <- 0
       }
-    }else{
-      cor_mat <- matrix(0, nrow = ncol(seu_ls[[i]]), ncol = ncol(seu_ls[[i]]), 
+      else{
+        if(cor_slot == "PC") cor_mat <- cor(t(as.matrix(PCA_res[,1:top_pcs])),method = "pearson")
+        else if(cor_slot == "HVG") cor_mat <- cor(seu_ls[[i]]@assays[["RNA"]]@scale.data[VariableFeatures(object = seu_ls[[i]]),],method = "pearson")
+        
+        for(j in seq_vec){
+          cor_mat[j,seq_vec[-unlist(dist_knn$id[j,])]] <- 0
+          cor_mat[j,j] <- 0
+        }
+      }
+    }else{# Enable edge_smoothing
+      cor_mat <- matrix(NA, nrow = ncol(seu_ls[[i]]), ncol = ncol(seu_ls[[i]]), 
                         dimnames = list(colnames(seu_ls[[i]]), colnames(seu_ls[[i]])))
-      dist_mat <- matrix(0, nrow = nrow(cor_mat), ncol = ncol(cor_mat), 
-                         dimnames = list(colnames(cor_mat), row.names(cor_mat)))
-      nn_mat <- matrix(0, nrow = nrow(cor_mat), ncol = ncol(cor_mat), 
-                         dimnames = list(colnames(cor_mat), row.names(cor_mat)))
-      # Find NN
-      for(j in seq_len(nrow(dist_mat))){
-        dist_mat[,j] <- sqrt((seu_ls[[i]]@meta.data[["coord_x"]] - seu_ls[[i]]@meta.data[["coord_x"]][j])^2 + 
-                               (seu_ls[[i]]@meta.data[["coord_y"]] - seu_ls[[i]]@meta.data[["coord_y"]][j])^2)
-        nn_vec <- sort(dist_mat[,j])[1:(nn+1)] %>% names()
-        nn_mat[j, nn_vec] <- 1
-      }
-      # Calc Smoothed Edge Weight
-      for(j in seq_len(nrow(dist_mat)-1)){
-        for(k in (j+1):nrow(dist_mat)){
-          if(nn_mat[j,k] != 1) next
-          nn_vec1 <- colnames(nn_mat)[nn_mat[j,]==1]
-          nn_vec2 <- colnames(nn_mat)[nn_mat[k,]==1]
+      for(j in seq_len(nrow(cor_mat))){
+        for(k in unlist(dist_knn$id[j,])){
+          if(!is.na(cor_mat[j,k]) | !is.na(cor_mat[k,j])) next
+          
+          nn_vec1 <- unlist(dist_knn$id[j,])
+          nn_vec2 <- unlist(dist_knn$id[k,])
           
           if(FALSE){
-            ggplot(seu_ls[[i]]@meta.data[union(which(nn_mat[j,] == 1),
-                                               which(nn_mat[k,] == 1)),],
+            ggplot(seu_ls[[i]]@meta.data[union(nn_vec1,nn_vec2),],
                    aes(x = coord_x, y = coord_y))+
               geom_point() + 
               theme_classic()
           }
           
-          nn_common <- intersect(nn_vec1, nn_vec2)
-          nn_vec1 <- c(colnames(nn_mat)[j],nn_vec1[!nn_vec1 %in% nn_common])
-          nn_vec2 <- c(colnames(nn_mat)[k],nn_vec2[!nn_vec2 %in% nn_common])
+          nn_common <- c(j,k,intersect(nn_vec1, nn_vec2))
+          nn_vec1 <- c(j,nn_vec1[!nn_vec1 %in% nn_common])
+          nn_vec2 <- c(k,nn_vec2[!nn_vec2 %in% nn_common])
           
           if(cor_slot == "PC"){
-              cor_val <- cor(x = colMeans(matrix(seu_ls[[i]]@reductions[["pca"]]@cell.embeddings[nn_vec1,1:top_pcs], ncol = top_pcs)),
-                             y = colMeans(matrix(seu_ls[[i]]@reductions[["pca"]]@cell.embeddings[nn_vec2,1:top_pcs], ncol = top_pcs)),
-                             method = "pearson")
+            cor_val <- cor(x = colMeans(matrix(PCA_res[nn_vec1,1:top_pcs], ncol = top_pcs)),
+                           y = colMeans(matrix(PCA_res[nn_vec2,1:top_pcs], ncol = top_pcs)),
+                           method = "pearson")
           }else if(cor_slot == "HVG") {
             cor_mat <- cor(seu_ls[[i]]@assays[["RNA"]]@scale.data[VariableFeatures(object = seu_ls[[i]]),],method = "pearson")
             cor_val <- cor(x = rowMeans(matrix(seu_ls[[i]]@assays[["RNA"]]@scale.data[VariableFeatures(object = seu_ls[[i]]),nn_vec1], nrow = hvg)),
                            y = rowMeans(matrix(seu_ls[[i]]@assays[["RNA"]]@scale.data[VariableFeatures(object = seu_ls[[i]]),nn_vec2], nrow = hvg)),
                            method = "pearson")
+          }else if(cor_slot == "SNN"){
+            cor_val <- map2(.x = rep(nn_vec1,length(nn_vec2)), 
+                            .y = rep(nn_vec2,each = length(nn_vec1)),
+                            .f = function(x,y){
+                              length(intersect(unlist(expr_knn$id[x,]),
+                                               unlist(expr_knn$id[y,])))
+                           }) %>% unlist() %>% median()
           }
           cor_mat[j,k] <- cor_val
           cor_mat[k,j] <- cor_val
         }
       }
+      cor_mat[is.na(cor_mat)] <- 0
     }
     
     
@@ -268,10 +291,14 @@ stage_1 <- function(seu_ls, cor_threshold = 0.2, nn = 12, cl_resolution = 10,
       draw_slide_graph(seu_ls[[i]]@meta.data,seu_ls[[i]]@misc[["edges"]],
                        cor_threshold,"layer")
     
-    louvain_res <- cluster_louvain(g, resolution = cl_resolution)
-    seu_ls[[i]]@meta.data[["cluster"]] <- as.factor(louvain_res$membership)
+    if(use_leiden){
+      #snn_res <- dbscan::sNN(PCA_res[,1:top_pcs],k = nn_2, kt = 7)
+      #pt_weight <- rowSums(!is.na(snn_res[["shared"]]))
+      cl_res <- cluster_leiden(g, resolution_parameter = cl_resolution, objective_function = "modularity")
+    }else cl_res <- cluster_louvain(g, resolution = cl_resolution)
+    seu_ls[[i]]@meta.data[["cluster"]] <- as.factor(cl_res$membership)
     
-    message(paste(i,"cluster number:",length(levels(as.factor(louvain_res$membership)))))
+    message(paste(i,"cluster number:",length(levels(as.factor(cl_res$membership)))))
     seu_ls[[i]]@misc[["graph_plot_cluster"]] <- 
       draw_slide_graph(seu_ls[[i]]@meta.data,seu_ls[[i]]@misc[["edges"]],
                        cor_threshold,"cluster") + theme(legend.position = "none")
@@ -282,14 +309,11 @@ stage_1 <- function(seu_ls, cor_threshold = 0.2, nn = 12, cl_resolution = 10,
       sml_cl_idx <- names(table(seu_ls[[i]]@meta.data[["merged_cluster"]]))[table(seu_ls[[i]]@meta.data[["merged_cluster"]]) < cl_min]
       
       for(j in sml_cl_idx){
-        node_ls <- colnames(seu_ls[[i]])[seu_ls[[i]]@meta.data[["merged_cluster"]]==j]
-        nn_ls <- c()
-        for(node in node_ls){
-          nn_ls <- append(nn_ls,sort(dist_mat[,node])[1:(nn+1)] %>% names())
-        }
+        node_ls <- which(seu_ls[[i]]@meta.data[["merged_cluster"]]==j)
+        nn_ls <- lapply(node_ls,function(x){unlist(dist_knn$id[x,])}) %>% unlist %>% unique
         nn_ls <- nn_ls[!nn_ls %in% node_ls]
-        nn_cl <- seu_ls[[i]]@meta.data[["merged_cluster"]][colnames(seu_ls[[i]]) %in% nn_ls]
-        seu_ls[[i]]@meta.data[["merged_cluster"]][colnames(seu_ls[[i]]) %in% node_ls] <- names(sort(table(nn_cl),decreasing=TRUE)[1])
+        nn_cl <- seu_ls[[i]]@meta.data[["merged_cluster"]][nn_ls]
+        seu_ls[[i]]@meta.data[["merged_cluster"]][node_ls] <- names(sort(table(nn_cl),decreasing=TRUE)[1])
       }
       seu_ls[[i]]@meta.data[["merged_cluster"]] <- droplevels(seu_ls[[i]]@meta.data[["merged_cluster"]])
       message(paste(i,"merged cluster number:",length(levels(seu_ls[[i]]@meta.data[["merged_cluster"]]))))
@@ -337,7 +361,7 @@ louvain_w_cor <- function(cor_mat_, nn_=10, res_ = 1){
 
 stage_2 <- function(seu_ls, top_pcs = 30, nn_2=10, cl_key = "merged_cluster",
                     rtn_seurat = F,method="louvain", hly_cor = 0.9, hvg = 2000, cor_slot = "PC", use_glmpca = F, resolution = 1,
-                    rare_ct="none"){
+                    rare_ct="none",use_leiden = F){
   tic <- Sys.time()
   hvg_union <- c()
   gene_intersect <- row.names(seu_ls[[names(seu_ls)[1]]])
@@ -462,7 +486,9 @@ stage_2 <- function(seu_ls, top_pcs = 30, nn_2=10, cl_key = "merged_cluster",
     #cols_cluster <- vcols[f]
     #plot(g, layout = layout,vertex.size=3, vertex.color=cols_cluster, vertex.label.cex=0.1)
     #legend("topleft", legend = levels(f), pch = 16, col = vcols, bty = "n")
-    louvain_res <- cluster_louvain(g, resolution = resolution)
+    if(use_leiden == T){
+      louvain_res <- cluster_leiden(g, resolution_parameter = resolution)
+    }else louvain_res <- cluster_louvain(g, resolution = resolution)
     #table(louvain_res$membership)
     cl_df[["louvain"]] <- as.character(louvain_res$membership)
     sml_cl_idx <- names(table(cl_df[["louvain"]]))[table(cl_df[["louvain"]]) < 2]

@@ -5,26 +5,38 @@ date: "2023-10-24"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r setup}
 knitr::opts_chunk$set(echo = TRUE)
+source("~/GitHub/atlasscalespatialclustering/haowen_update/R/func.R")
+init()
 ```
 
-## R Markdown
+## Load Object from spe
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r}
+load("D:/Documents/GitHub/atlasscalespatialclustering/haowen_update/R/spe_QC_spotsRemoved.Rdata")
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+seurat_ls <- new_seu_ls(sel_assay = "counts", sel_col = NULL)
 
-```{r cars}
-summary(cars)
+seurat_ls <- stage_1(seurat_ls,preprocess = T, top_pcs = 6, cor_threshold = 0.6, edge_smoothing = T, nn = 6, use_glmpca = T, use_leiden = F)
+
+rtn_ls <- stage_2(seurat_ls, cl_key = "merged_cluster",rtn_seurat = T,nn_2 = 10,method = "MNN",top_pcs = 6, use_glmpca = T, rare_ct = "m", resolution = 1)
+seurat_ls <- assign_label(seurat_ls, rtn_ls$cl_df, "MNN", cl_key = "merged_cluster")
+
+ggplot(rtn_ls$cl_df,aes(x = umap_1, y = umap_2, color = louvain)) + 
+  geom_point() + 
+  theme_classic()
+
+plot_ls1 <- list()
+for(i in names(seurat_ls)){
+  plot_ls1[[i]] <- draw_slide_graph(seurat_ls[[i]]@meta.data,NULL,NULL,"sec_cluster_MNN", filp = F) + labs(title = i)
+}
+
+pdf(file = "Clustering_res_1_pc_6.pdf", width = 16,height = 16)
+ggarrange(plotlist = plot_ls1,nrow = 2,ncol = 2)
+dev.off()
+
+
+draw_edge_dstr(seurat_ls[["151507"]]@misc[["raw_edges"]], "weight", "151507")
+
 ```
-
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
