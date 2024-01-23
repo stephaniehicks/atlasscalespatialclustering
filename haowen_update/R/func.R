@@ -84,14 +84,98 @@ new_spseu_ls <- function(){
 }
 
 
-##### Create PRECASTObjec #####
+##### Create PRECASTObject #####
+my_CreatePRECASTObject <- function (seuList, project = "PRECAST", gene.number = 2000, 
+          selectGenesMethod = "SPARK-X", numCores_sparkx = 1, customGenelist = NULL, 
+          premin.spots = 20, premin.features = 20, postmin.spots = 15, 
+          postmin.features = 15, rawData.preserve = FALSE, verbose = TRUE) 
+{
+  if (!inherits(seuList, "list")) 
+    stop("CreatePRECASTObject: check the argument: seuList! it must be a list.")
+  flag <- sapply(seuList, function(x) !inherits(x, "Seurat"))
+  if (any(flag)) 
+    stop("CreatePRECASTObject: check the argument: seuList! Each component of seuList must be a Seurat object.")
+  exist_spatial_coods <- function(seu) {
+    flag_spatial <- all(c("row", "col") %in% colnames(seu@meta.data))
+    return(flag_spatial)
+  }
+  flag_spa <- sapply(seuList, exist_spatial_coods)
+  if (any(!flag_spa)) 
+    stop("CreatePRECASTObject: check the argument: seuList! Each Seurat object in seuList must include  the spatial coordinates saved in the meta.data, named 'row' and 'col'!")
+  if (numCores_sparkx < 0) 
+    stop("CreatePRECASTObject: check the argument: numCores_sparkx! It must be a positive integer.")
+  if (!is.null(customGenelist) && (!is.character(customGenelist))) 
+    stop("CreatePRECASTObject: check the argument: customGenelist! It must be NULL or a character vector.")
+  object <- new(Class = "PRECASTObj", seuList = seuList, seulist = NULL, 
+                AdjList = NULL, parameterList = list(), resList = NULL, 
+                project = project)
+  seuList <- object@seuList
+  if (verbose) 
+    message("Filter spots and features from Raw count data...")
+  seuList <- lapply(seuList, PRECAST:::filter_spot, premin.features)
+  seuList <- pbapply::pblapply(seuList, PRECAST:::filter_gene, premin.spots)
+  message(" \n ")
+  if (is.null(customGenelist)) {
+    if (tolower(selectGenesMethod) == "spark-x") {
+      seuList <- pbapply::pblapply(seuList, PRECAST:::.findSVGs, 
+                                   nfeatures = gene.number, num_core = numCores_sparkx, 
+                                   verbose = verbose)
+      spaFeatureList <- lapply(seuList, DR.SC::topSVGs, 
+                               ntop = gene.number)
+    }
+    else if (tolower(selectGenesMethod) == "hvgs") {
+      seuList <- pbapply::pblapply(seuList, FindVariableFeatures, 
+                                   nfeatures = gene.number, verbose = verbose)
+      getHVGs <- function(seu) {
+        assay <- DefaultAssay(seu)
+        seu[[assay]]@var.features
+      }
+      spaFeatureList <- lapply(seuList, getHVGs)
+    }
+    else {
+      stop("CreatePRECASTObject: check the argument: selectGenesMethod! It only support 'SPARK-X' and 'HVGs' to select genes now. You can provide self-selected genes using customGenelist argument.")
+    }
+    spaFeatureList <- lapply(spaFeatureList, function(x) x[!is.na(x)])
+    if (any(sapply(spaFeatureList, length) < gene.number)) {
+      gene.number_old <- gene.number
+      gene.number <- min(sapply(spaFeatureList, length))
+      warning(paste0("Number of genes in one of sample is less than ", 
+                     gene.number_old, ", so set minimum number of SVGs as gene.number=", 
+                     gene.number))
+    }
+    if (verbose) 
+      message("Select common top variable genes  for multiple samples...")
+    genelist <- PRECAST:::selectIntFeatures(seuList, spaFeatureList = spaFeatureList, 
+                                  IntFeatures = gene.number)
+  }
+  else {
+    geneNames <- Reduce(intersect, (lapply(seuList, row.names)))
+    if (any(!(customGenelist %in% geneNames))) 
+      message("CreatePRECASTObject: remove genes:", paste0(setdiff(customGenelist, 
+                                                                   geneNames), "  "), "with low count reads in seuList.")
+    genelist <- intersect(customGenelist, geneNames)
+  }
+  seulist <- lapply(seuList, function(x) x[genelist, ])
+  if (verbose) 
+    message("Filter spots and features from SVGs(HVGs) count data...")
+  seulist <- lapply(seulist, PRECAST:::filter_spot, postmin.features)
+  seulist <- pbapply::pblapply(seulist, PRECAST:::filter_gene, postmin.spots)
+  #seulist <- lapply(seulist, NormalizeData, verbose = verbose)
+  object@seulist <- seulist
+  if (!rawData.preserve) {
+    object@seuList <- NULL
+  }
+  return(object)
+}
+
+
 PRECAST_test <- function(seu_ls, k=7, gene_num=2000){
   tic <- Sys.time()
-  PRECAST_obj <- CreatePRECASTObject(seu_ls, project = "SpatialLIBD", gene.number = gene_num, selectGenesMethod = "SPARK-X",
+  PRECAST_obj <- my_CreatePRECASTObject(seu_ls, project = "SpatialLIBD", gene.number = gene_num, selectGenesMethod = "SPARK-X",
                                      premin.spots = 20, premin.features = 20, postmin.spots = 1, 
                                      postmin.features = 10, verbose = F)
   
-  PRECAST_obj <- AddAdjList(PRECAST_obj, platform = "Visium", type = "fixed_number")
+  PRECAST_obj <- suppressMessages(AddAdjList(PRECAST_obj, platform = "Visium"))
   PRECAST_obj <- AddParSetting(PRECAST_obj, Sigma_equal = FALSE, verbose = F, int.model = NULL)
   
   PRECAST_obj <- PRECAST(PRECAST_obj, K = k)
@@ -148,7 +232,7 @@ draw_slide_graph <- function(meta_data, edge_df=NULL, threshold=NULL, col_sel, p
     else g <- g + scale_colour_manual(values = pal)
   }
     g <- g + theme_classic()
-  if(flip)g +coord_flip()
+  if(flip) g <- g + coord_flip()
   g
 }
 
@@ -396,19 +480,23 @@ stage_2 <- function(seu_ls, top_pcs = 30, nn_2=10, cl_key = "merged_cluster",
   cl_expr_obj <- CreateSeuratObject(t(cl_expr),verbose = F)
   cl_expr_obj <- FindVariableFeatures(cl_expr_obj, selection.method = "vst", nfeatures = hvg,verbose = F)
   cl_expr_obj <- ScaleData(cl_expr_obj, features = rownames(cl_expr_obj),verbose = F)
-  cl_expr_obj <- RunPCA(cl_expr_obj, features = VariableFeatures(object = cl_expr_obj),verbose = F)
-  cl_expr_obj <- RunUMAP(cl_expr_obj, dims = 1:top_pcs,verbose = F)
+  
   if(use_glmpca){
     mat <- as.matrix(cl_expr_obj@assays$RNA@counts[VariableFeatures(object = cl_expr_obj),])
     mat <- nullResiduals(mat, type="deviance")
     res1 <- calculatePCA(mat,ncomponents = top_pcs, scale = TRUE, BSPARAM = BiocSingular::RandomParam())
-    cl_expr_obj@reductions[["pca"]]@cell.embeddings <- res1 %>% as.matrix()
+    cl_expr_obj@misc[["glmpca"]] <- res1 %>% as.matrix()
+    PCA_res <- cl_expr_obj@misc[["glmpca"]]
     #cl_expr_obj@reductions[["pca"]]@feature.loadings <- gp_res$loadings %>% as.matrix()
+  }else{
+    cl_expr_obj <- RunPCA(cl_expr_obj, features = VariableFeatures(object = cl_expr_obj),verbose = F)
+    cl_expr_obj <- RunUMAP(cl_expr_obj, dims = 1:top_pcs,verbose = F)
+    PCA_res <- cl_expr_obj@reductions[["pca"]]@cell.embeddings %>%as.matrix()
   }
   
   if(method == "louvain"){
     if(cor_slot == "PC"){
-        cor_mat <- cor(t(as.matrix(cl_expr_obj@reductions[["pca"]]@cell.embeddings[,1:top_pcs])),method = "pearson")
+        cor_mat <- cor(t(as.matrix(PCA_res[,1:top_pcs])),method = "pearson")
     }else if(cor_slot == "HVG") cor_mat <- cor(cl_expr_obj@assays[["RNA"]]@scale.data[VariableFeatures(object = cl_expr_obj),],method = "pearson")
     
     louvain_res <- louvain_w_cor(cor_mat)
@@ -445,8 +533,8 @@ stage_2 <- function(seu_ls, top_pcs = 30, nn_2=10, cl_key = "merged_cluster",
         idx_j <- cl_expr_obj@meta.data[["orig.ident"]] == levels(cl_expr_obj@meta.data[["orig.ident"]])[j]
         
         if(cor_slot == "PC"){
-          mat_i <- as.matrix(cl_expr_obj@reductions[["pca"]]@cell.embeddings[idx_i,1:top_pcs])
-          mat_j <- as.matrix(cl_expr_obj@reductions[["pca"]]@cell.embeddings[idx_j,1:top_pcs])
+          mat_i <- as.matrix(PCA_res[idx_i,1:top_pcs])
+          mat_j <- as.matrix(PCA_res[idx_j,1:top_pcs])
         }else if(cor_slot == "HVG"){
           mat_i <- as.matrix(cl_expr_obj@assays[["RNA"]]@scale.data[VariableFeatures(object = cl_expr_obj), idx_i]) %>% t()
           mat_j <- as.matrix(cl_expr_obj@assays[["RNA"]]@scale.data[VariableFeatures(object = cl_expr_obj), idx_j]) %>% t()
@@ -495,7 +583,7 @@ stage_2 <- function(seu_ls, top_pcs = 30, nn_2=10, cl_key = "merged_cluster",
     cl_df[["louvain"]][cl_df[["louvain"]] %in% sml_cl_idx] <- NA
     if(rare_ct == "a"){
       if(cor_slot == "PC"){
-        cor_mat <- cor(t(as.matrix(cl_expr_obj@reductions[["pca"]]@cell.embeddings[is.na(cl_df[["louvain"]]),1:top_pcs])),method = "pearson")
+        cor_mat <- cor(t(as.matrix(PCA_res[is.na(cl_df[["louvain"]]),1:top_pcs])),method = "pearson")
       }else if(cor_slot == "HVG") cor_mat <- cor(cl_expr_obj@assays[["RNA"]]@scale.data[VariableFeatures(object = cl_expr_obj),is.na(cl_df[["louvain"]])],method = "pearson")
       
       louvain_res <- louvain_w_cor(cor_mat, nn_=20,res_ = 1)
@@ -516,16 +604,21 @@ stage_2 <- function(seu_ls, top_pcs = 30, nn_2=10, cl_key = "merged_cluster",
   
   
   
+  if(!use_glmpca){
+    cl_df[["umap_1"]] <- cl_expr_obj@reductions[["umap"]]@cell.embeddings[,1]
+    cl_df[["umap_2"]] <- cl_expr_obj@reductions[["umap"]]@cell.embeddings[,2]
+  }
   
-  cl_df[["umap_1"]] <- cl_expr_obj@reductions[["umap"]]@cell.embeddings[,1]
-  cl_df[["umap_2"]] <- cl_expr_obj@reductions[["umap"]]@cell.embeddings[,2]
-  cl_df[["layer"]] <- apply(cl_df,1,
-                            FUN = function(x){
-                              idx <- seu_ls[[x[["sample"]] ]]@meta.data[[cl_key]] == x[["cluster"]]
-                              layer_vec <- seu_ls[[x[["sample"]] ]]@meta.data[["layer"]][idx]
-                              table(layer_vec) %>% sort(decreasing = T) %>% names() %>% .[1]
-                              
-                            })
+  if("layer" %in% colnames(seu_ls[[1]]@meta.data)){
+    cl_df[["layer"]] <- apply(cl_df,1,
+                              FUN = function(x){
+                                idx <- seu_ls[[x[["sample"]] ]]@meta.data[[cl_key]] == x[["cluster"]]
+                                layer_vec <- seu_ls[[x[["sample"]] ]]@meta.data[["layer"]][idx]
+                                table(layer_vec) %>% sort(decreasing = T) %>% names() %>% .[1]
+                              })
+  }
+  
+  
   toc <- Sys.time()
   message("Elasped Time(sec):")
   message(toc - tic)

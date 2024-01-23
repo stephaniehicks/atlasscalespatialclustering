@@ -96,7 +96,7 @@ assign_celltype <- function(probs, cell_max = 1){
 ##### Main Simulation #####
 spe_template <- STexampleData::Visium_humanDLPFC()
 
-my_sim <- function(it = 1, tmp_spe=spe_template, n_gene = 200, noise = 2, ig_ratio = 1, top_pcs = 30, 
+my_sim <- function(it = 1, tmp_spe=spe_template, n_gene = 200, noise = 0.2, ig_ratio = 1, top_pcs = 30, 
                    n_group = 4, n_celltype = 4, map_mat = NULL, cell_max = 1, n_sample = 4, 
                    segmentation = T, integration = T){
   n_spots <- ncol(tmp_spe)
@@ -117,7 +117,7 @@ my_sim <- function(it = 1, tmp_spe=spe_template, n_gene = 200, noise = 2, ig_rat
   # Ground truth ranking
   rowData_df <- data.frame(
     gene_idx  = 1:total_gene_num, 
-    mu_shift = runif(n = total_gene_num, min = 20, max = 40),# Different mean expression level
+    mu_shift = runif(n = total_gene_num, min = 2, max = 4),# Different mean expression level
     var_scale = runif(n = total_gene_num, min = 1, max = 4) # Different effect size
   ) |> 
     mutate(gene_name = paste0("gene_", gene_idx),
@@ -157,9 +157,11 @@ my_sim <- function(it = 1, tmp_spe=spe_template, n_gene = 200, noise = 2, ig_rat
         cell_num = sapply(cell_type,
                           FUN = function(x){
                             str_split(x,pattern=',') %>% unlist() %>% length()
-                          })
+                          }),
         
         #std_z = scale(z) # standardized
+        coord_x = tmp_spe@colData@listData[["array_col"]],
+        coord_y = tmp_spe@colData@listData[["array_row"]]
       )
     # Check cell type ratio
     
@@ -205,7 +207,8 @@ my_sim <- function(it = 1, tmp_spe=spe_template, n_gene = 200, noise = 2, ig_rat
                l_vec[1] = 1
                ret_vec <- sapply(1:nrow(spa_str_df),
                                  FUN = function(x){
-                                   pmax(round(mean(tmp_vec[l_vec[x]:r_vec[x]])),0)
+                                   #pmax(round(mean(tmp_vec[l_vec[x]:r_vec[x]])),0)
+                                   mean(tmp_vec[l_vec[x]:r_vec[x]])
                                  })
              }
              
@@ -215,6 +218,8 @@ my_sim <- function(it = 1, tmp_spe=spe_template, n_gene = 200, noise = 2, ig_rat
       list_cbind() |>  
       t()
     
+    # Cap
+    gene_count_mat[gene_count_mat<0] <- 0
     
     rownames(gene_count_mat) <- rownames(rowData_df)
     colnames(gene_count_mat) <- rownames(spa_str_df)
@@ -234,10 +239,8 @@ my_sim <- function(it = 1, tmp_spe=spe_template, n_gene = 200, noise = 2, ig_rat
     seu_ls[[pattern]]@meta.data[["barcode"]] = row.names(seu_ls[[pattern]]@meta.data)
     seu_ls[[pattern]]@meta.data[["batch"]] = pattern
     seu_ls[[pattern]]@meta.data[["layer"]] = seu_ls[[pattern]]@meta.data[["z"]]
-    seu_ls[[pattern]]@meta.data[["coord_x"]] = seu_ls[[pattern]]@meta.data[["x"]]*1000
-    seu_ls[[pattern]]@meta.data[["coord_y"]] = seu_ls[[pattern]]@meta.data[["y"]]*1000
-    seu_ls[[pattern]]@meta.data[["row"]] = seu_ls[[pattern]]@meta.data[["pxl_row_in_fullres"]]
-    seu_ls[[pattern]]@meta.data[["col"]] = seu_ls[[pattern]]@meta.data[["pxl_col_in_fullres"]]
+    seu_ls[[pattern]]@meta.data[["row"]] = seu_ls[[pattern]]@meta.data[["coord_x"]]
+    seu_ls[[pattern]]@meta.data[["col"]] = seu_ls[[pattern]]@meta.data[["coord_y"]]
     seu_ls[[pattern]]@misc[["group"]] <- draw_slide_graph(seu_ls[[pattern]]@meta.data,col_sel = "z")
   }
   
